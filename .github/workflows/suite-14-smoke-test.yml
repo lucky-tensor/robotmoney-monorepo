@@ -178,11 +178,15 @@ jobs:
     name: smoke-test-devnet-${{ matrix.binary }}
     runs-on: ubuntu-latest
     # 70 min (was 45): full_stack_demo_tvl boots the entire compose stack and,
-    # since the rust-services image is built from source, recompiles the indexer
-    # (cargo --release) before the 90s indexer-settle wait — on slower
+    # since the rust-services images are built from source, recompiles the
+    # indexer (cargo --release) before the 90s indexer-settle wait — on slower
     # GitHub-hosted runners this tipped the heaviest binary past the 45-min cap
     # and it was cancelled at exactly 45m (issue #880). 70 min gives headroom for
-    # the build + boot + settle without masking a genuinely hung boot. The four
+    # the build + boot + settle without masking a genuinely hung boot. Issue
+    # #1354 split that one image into two (indexer, explorer-api) but did NOT
+    # add a second compile: both are targets of one multi-stage build sharing a
+    # single `builder` stage, so the cargo --release cost this budget covers is
+    # still paid once. The four
     # rows added by issue #1311 (faucet_eth, faucet_rm, fund_usdc, governance) are
     # all lighter than fixture_meta, so the existing 70-min ceiling already covers
     # them with headroom.
