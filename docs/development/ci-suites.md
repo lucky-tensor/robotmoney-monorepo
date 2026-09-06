@@ -522,11 +522,17 @@ isolation, independent of any client (rmpc, dapp, explorer).
 5. Cargo cache
 6. `cargo fmt --check -p smoke-test`
 7. `cargo build -p smoke-test` — includes the `smoke-test` CLI binary
-8. `cargo clippy -p smoke-test --all-targets -- -D warnings` — type-checks the crate's 10 `tests/` integration binaries in the hermetic `smoke-test-guards` job (issue #1295); `cargo build` alone never compiles them
+8. `cargo clippy -p smoke-test --all-targets -- -D warnings` — type-checks the crate's 9 `tests/` integration binaries in the hermetic `smoke-test-guards` job (issue #1295); `cargo build` alone never compiles them
 9. `cargo test -p smoke-test --release --test cli_meta -- --nocapture` — boots `smoke-test --full-stack`, checks the structured endpoint summary, verifies `--dapp-port` / Ctrl-C teardown, and writes `smoke-test-cli_meta.log`
 10. `cargo test -p smoke-test --release --test fixture_meta -- --test-threads=1 --nocapture` — boots devnet, deploys contracts, asserts healthy RPC + block production, then tears down; verifies `Drop` runs compose-down cleanly and writes `smoke-test-fixture_meta.log`
 11. `cargo test -p smoke-test --release --test demo_seeding -- --test-threads=1 --nocapture` (four-vault real-TVL, issue #592) — boots the devnet fixture, seeds the simulated depositors, and asserts the four-vault real-TVL end state: `VaultRegistry.listVaults()` returns **exactly four Active** vaults (PRD §11.1–§11.4); `PortfolioRouter.getWeights()` covers the three router-eligible vaults summing to 10000 bps while the deSPXA RWA vault is never weighted (direct-seed-only, ADR-0006 §1); and **all four** vaults report non-zero on-chain `totalAssets` after seeding. Writes `smoke-test-demo_seeding.log`. **This gate runs exactly once per suite run — on the `demo_seeding` matrix binary only** (see de-dup note below).
-12. Upload smoke-test logs from `$RUNNER_TEMP/robotmoney-smoke-test/` as a CI artifact, then run `docker compose down -v --remove-orphans || true` for the safety-net teardown
+12. Four more devnet matrix rows, folded in by issue #1311 (each boots its own `Fixture`, runs a handful of RPC/`cast` round-trips, and tears down — no dapp-stack build, no reseed):
+    - `cargo test -p smoke-test --release --test faucet_eth -- --test-threads=1 --nocapture` — native Base ETH faucet drip round-trip (issue #466): harness EOA holds non-zero ETH at boot, `fund_eth_from_harness` grows the recipient's balance by the exact drip amount
+    - `cargo test -p smoke-test --release --test faucet_rm -- --test-threads=1 --nocapture` — RM token faucet drip round-trip (issue #365): RmToken deployed non-zero, harness holds initial supply, `fund_rm_token` grows the recipient's balance by the exact amount and emits a matching `Transfer` log
+    - `cargo test -p smoke-test --release --test fund_usdc -- --test-threads=1 --nocapture` — real-signed-transfer assertions (issue #255 step 7): exact-amount USDC transfer, correct `Transfer` log, the tx signature recovers to `HARNESS_USDC_HOLDER`, and the devnet backend is Geth (`web3_clientVersion`) with Anvil cheat RPCs (`anvil_setBalance`) rejected
+    - `cargo test -p smoke-test --release --test governance -- --test-threads=1 --nocapture` — RouterGovernance deploy + `setVotingPower` round-trip (issue #364) against the **actual `forge script Deploy` output**: `RouterGovernance` non-zero with bytecode, `setVotingPower` round-trips, deployer holds `ADMIN_ROLE`
+    Each is wrapped in `cargo_test_require_executed.sh` so a run that silently collects zero tests fails red rather than green (issue #1311 AC). All four write `smoke-test-<binary>.log`.
+13. Upload smoke-test logs from `$RUNNER_TEMP/robotmoney-smoke-test/` as a CI artifact, then run `docker compose down -v --remove-orphans || true` for the safety-net teardown
 
 > **Note:** Step 10 exercises `Fixture::new()` end-to-end — the same code
 > path that all devnet-backed suites (7, 8, 10, 11, 12) depend on. A
@@ -542,15 +548,20 @@ isolation, independent of any client (rmpc, dapp, explorer).
 >
 > **Parallel matrix + four-vault de-dup (issues #600, #915):** the
 > devnet-booting binaries run as a parallel matrix
-> `[cli_meta, fixture_meta, demo_seeding, full_stack_demo_tvl]` (`fail-fast:
-> false`), one runner per binary, each booting and tearing down its own
-> Geth+Lighthouse stack. The four-vault real-TVL gate (step 11) **is** the
-> `demo_seeding` matrix binary, so it runs exactly once per suite run. It is
-> *not* re-appended as an unconditional final step on every binary: doing so
-> previously booted a second devnet + reseed on
-> `cli_meta`/`fixture_meta`/`full_stack_demo_tvl` (~25 min of redundant
-> boot+seed on the slowest binary) with zero net coverage, since the
-> assertions already run as the `demo_seeding` binary.
+> `[cli_meta, fixture_meta, demo_seeding, full_stack_demo_tvl, faucet_eth,
+> faucet_rm, fund_usdc, governance]` (`fail-fast: false`), one runner per
+> binary, each booting and tearing down its own Geth+Lighthouse stack. The
+> four-vault real-TVL gate (step 11) **is** the `demo_seeding` matrix binary,
+> so it runs exactly once per suite run. It is *not* re-appended as an
+> unconditional final step on every binary: doing so previously booted a
+> second devnet + reseed on `cli_meta`/`fixture_meta`/`full_stack_demo_tvl`
+> (~25 min of redundant boot+seed on the slowest binary) with zero net
+> coverage, since the assertions already run as the `demo_seeding` binary.
+> The suite's total wall-clock stays bounded by the slowest row
+> (`full_stack_demo_tvl`, ~46 min measured) since the matrix runs in
+> parallel; the four rows added by issue #1311 add runner-minutes, not
+> suite latency — see "Resolution of the five smoke-test devnet targets"
+> below for the cost tradeoff.
 
 ---
 
@@ -1024,17 +1035,92 @@ CI is slower, and the affected jobs' `timeout-minutes` were raised to match
 (suite 7 `parity` 20→25, suite 8 `fast` 25→35, suite 8 `explorer-api` 25→40,
 suite 20 `pg` 20→30).
 
-### Deliberately not executed
+### Resolution of the five smoke-test devnet targets (issue #1311)
 
 `smoke-test::faucet_eth`, `faucet_rm`, `fund_usdc`, `governance` and
-`vault_deposit_redeem` are allowlisted. Each calls `smoke_test::Fixture`, which
-boots the full Geth + Lighthouse compose stack, deploys with forge, and seeds —
-the same cost as one row of suite 14's devnet matrix, which carries a 70-minute
-per-binary timeout. Rust does not run `Drop` on statics at process exit, so the
-stack outlives the binary and a second binary cannot reuse it: five targets mean
-five more runners, not five more minutes. Whether to fold them into suite 14's
-matrix, give them a push-to-`dev`-only tier, or delete the ones suite 5 already
-covers is owned by **issue #1311** — it is a cost decision, not a hygiene one.
+`vault_deposit_redeem` were allowlisted (issue #1282) rather than wired,
+because each calls `smoke_test::Fixture`, which boots the full Geth +
+Lighthouse compose stack, deploys with forge, and seeds — the same cost as one
+row of suite 14's devnet matrix. Rust does not run `Drop` on statics at
+process exit, so the stack outlives the binary and a second binary cannot
+reuse it, meaning each target needs its own runner. Issue #1311 measured the
+actual cost and resolved all five:
+
+| Target | Outcome | Reason |
+|--------|---------|--------|
+| `faucet_eth` | wired — suite 14 devnet matrix row | native Base ETH faucet drip round-trip (issue #466); no other executed target funds ETH through the fixture |
+| `faucet_rm` | wired — suite 14 devnet matrix row | RM token faucet drip round-trip (issue #365); no other executed target exercises `fund_rm_token` |
+| `fund_usdc` | wired — suite 14 devnet matrix row | real-signed-transfer + Geth-not-Anvil assertions (issue #255 step 7); no other executed target asserts the devnet backend rejects Anvil cheat RPCs |
+| `governance` | wired — suite 14 devnet matrix row | RouterGovernance deploy + `setVotingPower`/admin-role wiring on the **actual `forge script Deploy` output** (issue #364); distinct from `rmpc-fork-e2e::governance` (suite 5), which drives a hand-deployed governance stack's propose/vote/execute logic on an anvil fork and never touches the devnet's real deploy script — neither `fixture_meta` nor any other executed target reads `fx.governance()` |
+| `vault_deposit_redeem` | **deleted** | both of its assertions are already made by a suite that genuinely runs today: `vault_on_chain_state` (exitFeeBps==0, activeAdapterCount>=1) duplicates `smoke-test::fixture_meta::vault_has_zero_exit_fee_and_one_active_adapter`, already a suite-14 matrix row; `vault_deposit_redeem_round_trip` (deposit 1 USDC, redeem, assert USDC returned within tolerance) duplicates `rmpc-fork-e2e::vault_deposit_redeem_smoke` (suite-05 `anvil-goldens` group — confirmed executing for real against the checked-in fork fixture, `chain_id=8453 fork_block=48896605`, no skip). `rmpc-fork-e2e::devnet_adapter_round_trip` (suite-05 `geth-light` group) does **not** count as coverage despite naming the same scenario: it unconditionally self-skips in CI (`[fork-e2e] skipping: RMPC_FORK_RPC_URL not set`, `finished in 0.00s`) because that variable is never set anywhere in suite-05 — see issue #1239, which tracks provisioning it. The deleted test's docstring framing ("wired to the three real Aave/Compound/Morpho adapters") is therefore not independently re-proven by name anywhere; only the two narrower assertions it actually made (exit fee / adapter-count-`>=1`, and a generic deposit/redeem tolerance check) are covered by what runs |
+
+**Overlap analysis against `smoke-test::demo_seeding`** (required by issue
+#1311's scope, in addition to the `rmpc-fork-e2e::vault_deposit_redeem_smoke`
+and `rmpc-fork-e2e::governance` analyses above): `demo_seeding`'s assertions
+(`testing/smoke-test/tests/demo_seeding.rs`) are limited to
+`VaultRegistry.listVaults()` returning four Active vaults,
+`PortfolioRouter.getWeights()` matching the 8500/500/500/500 split, and all
+four vaults reporting non-zero `totalAssets` after `seed_demo_depositors`. It
+calls none of `fund_eth_from_harness`, `fund_rm_token`, or `setVotingPower`,
+and reads no `exitFeeBps` / `activeAdapterCount`. It does call
+`self.fund_usdc(...)` indirectly, via `seed_demo_depositors` funding each
+simulated depositor before their deposit -- but only as unasserted setup
+plumbing: `demo_seeding` never checks `fund_usdc.rs`'s distinguishing
+behavior (the exact balance delta, the `Transfer` log's
+`from=HARNESS_USDC_HOLDER` shape, signature recovery, or the Geth-vs-Anvil
+backend check). No overlap with any of the five targets:
+
+- `faucet_eth` / `faucet_rm` — faucet drip round-trips through distinct
+  fixture methods (`fund_eth_from_harness`, `fund_rm_token`) `demo_seeding`
+  never calls.
+- `fund_usdc` — `demo_seeding` calls the same `fund_usdc` method as setup
+  plumbing but asserts none of its distinguishing behavior (see above); the
+  two targets are not redundant.
+- `governance` — `demo_seeding` reads router weights as static config; it
+  never touches `RouterGovernance` or `setVotingPower`.
+- `vault_deposit_redeem` — `demo_seeding` asserts `totalAssets` rose after
+  seeding, not a redeem-returns-principal-within-tolerance round trip, and
+  never reads `exitFeeBps` / `activeAdapterCount`.
+
+**Why suite 14's matrix, not a push-to-`dev`-only tier or nightly:** the four
+wired targets only add a `Fixture::new()` boot plus a handful of RPC
+round-trips on top — no dapp-stack build, no indexer recompile, no reseed.
+This PR's own first CI run against the new matrix
+([run 33938728232](https://github.com/robotmoney/robotmoney-core/actions/runs/33938728232))
+measured the four new rows directly: `faucet_eth` 17m33s, `faucet_rm` 17m49s,
+`fund_usdc` 18m01s, `governance` 17m28s — all landing right next to
+`fixture_meta`'s 18m19s in the same run (the closest existing analog: boot +
+several RPC/eth_call assertions, no heavier work), against `cli_meta` at
+25m20s, `demo_seeding` at 20m00s, and `full_stack_demo_tvl` at ~46 min.
+Locally (warm cargo cache, pre-pulled images), `Fixture::new()` boot-to-ready
+plus the full contract-deploy pipeline was measured at 14m27s-14m32s across
+two local runs of `governance` — consistent with the ~13-17 minute CI figures
+above and with `cli_meta`'s own header, which already documents ~13-minute
+CI chain-container readiness (issue #988) rather than the 60-120s the boot
+log message claims. Because the devnet matrix runs in parallel (one runner
+per binary), adding four more rows does not change suite 14's total
+wall-clock — it stays bounded by `full_stack_demo_tvl`'s ~46 min — but it
+does add roughly four more `fixture_meta`-sized runners (~17-18 min each) to
+every PR against `dev`, since suite 14 is a HEAVY-tier gate with no path
+filter (unlike suite 5, which skips drafts). That runner-minute cost is the
+deliberate trade being made here: real coverage of three faucet round-trips
+and one production-deploy governance-wiring gap, none of which any other
+suite tests, in exchange for accepting it on every PR rather than reserving
+it for a push-to-`dev`-only or nightly tier. A push-to-`dev`-only or nightly
+tier was considered and rejected: these targets guard code paths (faucet
+drips, governance admin wiring) that dapp/rmpc consumers exercise directly,
+so a regression should fail the PR that introduces it, not surface a day
+later on `dev` or in a nightly run.
+
+Wiring `governance` into CI for the first time immediately paid for itself:
+it surfaced a real bug (`read_voting_power`'s hardcoded `votingPower(address)`
+selector, `0x13c8a7f5`, matched no function on `RouterGovernance` — the
+correct selector is `0xc07473f6`), which had never been caught because the
+target had never executed anywhere. Fixed in the same PR; confirmed 4/4
+passing both locally and in CI.
+
+`vault_deposit_redeem` needed no cost measurement because it is deleted, not
+wired — its allowlist entry is removed along with the file.
 
 ## Rust `tests/` compile coverage
 
@@ -1116,7 +1202,7 @@ binaries do not compile.
 |---|---|---|---|---|
 | `rmpc-unit` (suite 6) | `cargo test --lib` in `clients/rust-payment-client` | `rust-payment-client` | yes (23 files) | **added #1295** — `cargo clippy -p rust-payment-client --all-targets` |
 | `explorer-indexer-fast` (suite 8) | `cargo test --lib -- abi::tests::abi_drift_gate` | `explorer-indexer` | yes (13 files) | already — `cargo test --no-run` in `services/explorer-indexer` |
-| `smoke-test-guards` (suite 14) | `cargo test -p smoke-test --lib fork_manifest::tests`, `… --lib tests::` | `smoke-test` | yes (10 files) | **added #1295** — `cargo clippy -p smoke-test --all-targets` |
+| `smoke-test-guards` (suite 14) | `cargo test -p smoke-test --lib fork_manifest::tests`, `… --lib tests::` | `smoke-test` | yes (9 files) | **added #1295** — `cargo clippy -p smoke-test --all-targets` |
 | `watchdog-unit` (suite 20) | `cargo test -p watchdog --lib` | `watchdog` | yes (3 files) | **added #1295** — `cargo clippy -p watchdog --all-targets` (was `cargo clippy -p watchdog`) |
 
 ### Enumeration: every crate with a `tests/` directory
@@ -1131,7 +1217,7 @@ binaries do not compile.
 | `doctests` | `testing/doctests` | 4 | `rust-lint` (suite 4) | `opencode-plugin-validate` (suite 11a, `paths:`-filtered) |
 | `rmpc-e2e` | `testing/ethereum-testnet/e2e-rust` | 4 | `rust-lint` (suite 4) | suite 7 (`paths-ignore`, per-binary `--test`) |
 | `rmpc-fork-e2e` | `testing/fork-e2e-rust` | 18 | `rust-lint` (suite 4) | suite 5 `cargo test --no-run --release` (`paths-ignore`) |
-| `smoke-test` | `testing/smoke-test` | 10 | `rust-lint` (suite 4) | `smoke-test-guards` (suite 14) |
+| `smoke-test` | `testing/smoke-test` | 9 | `rust-lint` (suite 4) | `smoke-test-guards` (suite 14) |
 
 `testing/test-utils` has no `tests/` directory and is out of scope.
 

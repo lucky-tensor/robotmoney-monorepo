@@ -120,11 +120,15 @@ fn get_code(url: &str, addr: Address) -> String {
 }
 
 /// Read votingPower(addr) from the RouterGovernance contract.
-/// votingPower(address) selector: keccak256("votingPower(address)")[0..4]
+/// votingPower(address) selector: keccak256("votingPower(address)")[0..4] = 0xc07473f6
+/// (verified via `cast sig "votingPower(address)"` — issue #1311 found this
+/// target had never executed anywhere, so the previously-hardcoded 0x13c8a7f5
+/// selector, which does not match any function on RouterGovernance, had never
+/// been caught).
 fn read_voting_power(fx: &Fixture, voter: Address) -> u128 {
     // ABI-encode: selector + left-padded address (12 zero bytes + 20 addr bytes)
     let voter_hex = format!("{voter:x}");
-    let data = format!("0x13c8a7f5{voter_hex:0>64}");
+    let data = format!("0xc07473f6{voter_hex:0>64}");
     let result: String = rpc_call(
         fx.rpc_url(),
         "eth_call",

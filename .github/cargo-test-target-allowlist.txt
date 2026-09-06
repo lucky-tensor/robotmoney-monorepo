@@ -14,46 +14,14 @@
 # the better fix; reach for a line here only when the runtime cost is real and
 # named.
 
-# ---------------------------------------------------------------------------
-# smoke-test devnet targets — tracked by issue #1311
-# ---------------------------------------------------------------------------
-# Each of these calls smoke_test::Fixture, which runs `docker compose up --build`
-# on the full Geth + Lighthouse devnet, deploys the contract set with forge, and
-# seeds it. That is the same cost as one row of suite-14-smoke-test.yml's devnet
-# matrix, which carries a 70-minute timeout per binary because the heaviest one
-# has hit 45 minutes on a GitHub-hosted runner (issue #880). Rust does not run
-# Drop on statics at process exit, so the compose stack outlives the binary and a
-# second binary cannot reuse it (see the header of suite-07-rmpc-integration.yml)
-# -- five targets therefore mean five more runners, not five more minutes.
-#
-# Adding five 70-minute devnet runners to every ready-for-review PR is a cost
-# that has to be decided deliberately rather than smuggled in under a CI-hygiene
-# change, and these five sit squarely on the geth state-lag flake path of issue
-# #1241. Issue #1311 owns the decision: fold them into the existing suite-14
-# matrix, give them a push-to-dev-only tier, or delete the ones the fork-e2e
-# suite already covers.
-#
-# NOTE: smoke-test::governance is dark for a reason easy to miss. suite-05 does
-# run `--test governance`, but from `testing/fork-e2e-rust` -- that is
-# rmpc-fork-e2e::governance, a different crate's file. A name-only grep credits
-# this target; a package-scoped check does not.
-
-# Native Base ETH faucet drip round-trip (issue #466). Boots its own devnet.
-smoke-test::faucet_eth
-
-# RM token faucet drip round-trip (issue #365). Boots its own devnet.
-smoke-test::faucet_rm
-
-# fund_usdc real-signed-transfer assertions, incl. the Geth-not-Anvil check
-# (issue #255 step 7). Boots its own devnet.
-smoke-test::fund_usdc
-
-# RouterGovernance deploy + setVotingPower round-trip (issue #364). Boots its own
-# devnet. Distinct from rmpc-fork-e2e::governance, which suite-05 does run.
-smoke-test::governance
-
-# RobotMoneyVault deposit->redeem round-trip against the three real adapters
-# (issue #277). Boots its own devnet. Partially overlapped by
-# rmpc-fork-e2e::vault_deposit_redeem_smoke, which suite-05 does run on anvil
-# goldens; the overlap is one of the things issue #1311 has to weigh.
-smoke-test::vault_deposit_redeem
+# NOTE: the five smoke-test devnet targets formerly allowlisted here
+# (faucet_eth, faucet_rm, fund_usdc, governance, vault_deposit_redeem) were
+# resolved by issue #1311: faucet_eth/faucet_rm/fund_usdc/governance are now
+# wired into suite-14-smoke-test.yml's devnet matrix, and vault_deposit_redeem
+# was deleted (its assertions were already made by smoke-test::fixture_meta and
+# rmpc-fork-e2e::vault_deposit_redeem_smoke, both of which genuinely execute
+# today -- rmpc-fork-e2e::devnet_adapter_round_trip does NOT count despite
+# suite-05 naming it: it unconditionally self-skips in CI because
+# RMPC_FORK_RPC_URL is never set there, per issue #1239). See
+# docs/development/ci-suites.md §14 for the outcome record and measured
+# runtimes.

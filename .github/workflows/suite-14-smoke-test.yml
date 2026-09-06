@@ -77,6 +77,13 @@ jobs:
     name: smoke-test-guards
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # feature-correctness (not system-correctness): this job runs on every
+    # PR including drafts (no draft-exclusion `if:`), matching
+    # feature-correctness's pr_draft:run/pr_r4r:run shape. See the `devnet`
+    # job below for why the heavier integration job below is classed the
+    # same way despite being system-correctness by content.
+    env:
+      CI_CLASS: feature-correctness
     steps:
       - uses: actions/checkout@v4
         with:
@@ -144,6 +151,29 @@ jobs:
   #   - fixture_meta:        boots devnet, deploys contracts, asserts RPC + block production
   #   - demo_seeding:        boots the four-vault catalog and asserts all four vaults seed
   #   - full_stack_demo_tvl: boots full compose stack, asserts all four PRD §11 vaults report non-zero TVL
+  #   - faucet_eth:          native Base ETH faucet drip round-trip (issue #466)
+  #   - faucet_rm:           RM token faucet drip round-trip (issue #365)
+  #   - fund_usdc:           real-signed-transfer assertions incl. the Geth-not-Anvil check (issue #255 step 7)
+  #   - governance:          RouterGovernance deploy + setVotingPower round-trip (issue #364)
+  #
+  # faucet_eth/faucet_rm/fund_usdc/governance were folded in by issue #1311: each
+  # only adds a Fixture boot (already paid by every other row) plus a handful of
+  # RPC round-trips on top, so each row's wall-clock is expected to land near
+  # fixture_meta's measured CI cost (~18 min) rather than full_stack_demo_tvl's
+  # ~46 min. Because the matrix runs in parallel, the suite's total wall-clock
+  # stays bounded by the slowest row (full_stack_demo_tvl); these four rows add
+  # runner-minutes, not suite latency. See docs/development/ci-suites.md §14
+  # ("Resolution of the five smoke-test devnet targets") for the measured
+  # figures and the cost tradeoff this was weighed against. `vault_deposit_redeem`
+  # was deleted instead of wired: both of its assertions were already made by a
+  # suite that runs -- vault_on_chain_state -> fixture_meta's
+  # vault_has_zero_exit_fee_and_one_active_adapter; the deposit/redeem round
+  # trip -> rmpc-fork-e2e::vault_deposit_redeem_smoke (suite-05 anvil-goldens,
+  # confirmed genuinely executing, not skipped). rmpc-fork-e2e's
+  # devnet_adapter_round_trip is NOT counted as coverage here despite suite-05
+  # naming it: it unconditionally self-skips in CI (RMPC_FORK_RPC_URL is never
+  # set there -- issue #1239), so citing it would repeat the exact false-green
+  # pattern this file exists to prevent.
   devnet:
     name: smoke-test-devnet-${{ matrix.binary }}
     runs-on: ubuntu-latest
@@ -152,12 +182,37 @@ jobs:
     # (cargo --release) before the 90s indexer-settle wait — on slower
     # GitHub-hosted runners this tipped the heaviest binary past the 45-min cap
     # and it was cancelled at exactly 45m (issue #880). 70 min gives headroom for
-    # the build + boot + settle without masking a genuinely hung boot.
+    # the build + boot + settle without masking a genuinely hung boot. The four
+    # rows added by issue #1311 (faucet_eth, faucet_rm, fund_usdc, governance) are
+    # all lighter than fixture_meta, so the existing 70-min ceiling already covers
+    # them with headroom.
     timeout-minutes: 70
+    # feature-correctness, not system-correctness, despite this being a full
+    # devnet integration matrix: this job has no draft-exclusion `if:` and
+    # runs on every PR to dev including drafts (pre-existing, by design --
+    # see "WHY THIS SUITE EXISTS" above: a broken Fixture::new() must be
+    # caught here before suites 7/8/10/11/12 pay their own boot cost).
+    # system-correctness mandates skip-on-draft, which would misdescribe
+    # this job's actual (intentional) trigger shape -- declaring it here
+    # would make `ci lint` flag a must-not-run-pr_draft error against
+    # behavior nobody wants changed. feature-correctness is the class whose
+    # cells actually match what this job does today.
+    env:
+      CI_CLASS: feature-correctness
     strategy:
       fail-fast: false
       matrix:
-        binary: [cli_meta, fixture_meta, demo_seeding, full_stack_demo_tvl]
+        binary:
+          [
+            cli_meta,
+            fixture_meta,
+            demo_seeding,
+            full_stack_demo_tvl,
+            faucet_eth,
+            faucet_rm,
+            fund_usdc,
+            governance,
+          ]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -215,11 +270,18 @@ jobs:
       # (~25 min each on full_stack_demo_tvl) with zero net coverage, since the
       # assertions already run as the demo_seeding binary. Runs single-threaded
       # for the same fixed-port reason as fixture_meta.
+      #
+      # Routed through cargo_test_require_executed.sh (issue #1311 AC) so a run
+      # that collects zero tests (e.g. a --test filter that silently matched
+      # nothing) fails loudly instead of reporting a false green — the same
+      # guard suites 4/6/7/8/20 already use.
       - name: cargo test (${{ matrix.binary }} — boots + tears down its own devnet)
         working-directory: testing/smoke-test
         env:
           SMOKE_TEST_LOG_FILE: ${{ runner.temp }}/robotmoney-smoke-test/smoke-test-${{ matrix.binary }}.log
-        run: cargo test -p smoke-test --release --test ${{ matrix.binary }} -- --test-threads=1 --nocapture
+        run: >-
+          bash ../../.github/scripts/cargo_test_require_executed.sh
+          -p smoke-test --release --test ${{ matrix.binary }} -- --test-threads=1 --nocapture
 
       - name: Upload smoke-test logs
         if: always()
