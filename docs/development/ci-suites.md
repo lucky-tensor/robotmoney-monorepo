@@ -996,7 +996,26 @@ actual cost and resolved all five:
 | `faucet_rm` | wired — suite 14 devnet matrix row | RM token faucet drip round-trip (issue #365); no other executed target exercises `fund_rm_token` |
 | `fund_usdc` | wired — suite 14 devnet matrix row | real-signed-transfer + Geth-not-Anvil assertions (issue #255 step 7); no other executed target asserts the devnet backend rejects Anvil cheat RPCs |
 | `governance` | wired — suite 14 devnet matrix row | RouterGovernance deploy + `setVotingPower`/admin-role wiring on the **actual `forge script Deploy` output** (issue #364); distinct from `rmpc-fork-e2e::governance` (suite 5), which drives a hand-deployed governance stack's propose/vote/execute logic on an anvil fork and never touches the devnet's real deploy script — neither `fixture_meta` nor any other executed target reads `fx.governance()` |
-| `vault_deposit_redeem` | **deleted** | both of its assertions are already made by a suite that runs today: `vault_on_chain_state` (exitFeeBps==0, activeAdapterCount>=1) duplicates `smoke-test::fixture_meta::vault_has_zero_exit_fee_and_one_active_adapter`, already a suite-14 matrix row; `vault_deposit_redeem_round_trip` (deposit 1 USDC, redeem, assert USDC returned within tolerance) duplicates `rmpc-fork-e2e::vault_deposit_redeem_smoke` (suite-05 `anvil-goldens` group, against the real deployed vault) and `rmpc-fork-e2e::devnet_adapter_round_trip` (suite-05 `geth-light` group, real Geth devnet, real adapters, same tolerance check) |
+| `vault_deposit_redeem` | **deleted** | both of its assertions are already made by a suite that genuinely runs today: `vault_on_chain_state` (exitFeeBps==0, activeAdapterCount>=1) duplicates `smoke-test::fixture_meta::vault_has_zero_exit_fee_and_one_active_adapter`, already a suite-14 matrix row; `vault_deposit_redeem_round_trip` (deposit 1 USDC, redeem, assert USDC returned within tolerance) duplicates `rmpc-fork-e2e::vault_deposit_redeem_smoke` (suite-05 `anvil-goldens` group — confirmed executing for real against the checked-in fork fixture, `chain_id=8453 fork_block=48896605`, no skip). `rmpc-fork-e2e::devnet_adapter_round_trip` (suite-05 `geth-light` group) does **not** count as coverage despite naming the same scenario: it unconditionally self-skips in CI (`[fork-e2e] skipping: RMPC_FORK_RPC_URL not set`, `finished in 0.00s`) because that variable is never set anywhere in suite-05 — see issue #1239, which tracks provisioning it. The deleted test's docstring framing ("wired to the three real Aave/Compound/Morpho adapters") is therefore not independently re-proven by name anywhere; only the two narrower assertions it actually made (exit fee / adapter-count-`>=1`, and a generic deposit/redeem tolerance check) are covered by what runs |
+
+**Overlap analysis against `smoke-test::demo_seeding`** (required by issue
+#1311's scope, in addition to the `rmpc-fork-e2e::vault_deposit_redeem_smoke`
+and `rmpc-fork-e2e::governance` analyses above): `demo_seeding`'s assertions
+(`testing/smoke-test/tests/demo_seeding.rs`) are limited to
+`VaultRegistry.listVaults()` returning four Active vaults,
+`PortfolioRouter.getWeights()` matching the 8500/500/500/500 split, and all
+four vaults reporting non-zero `totalAssets` after `seed_demo_depositors`. It
+calls none of `fund_eth_from_harness`, `fund_rm_token`, `fund_usdc`,
+`setVotingPower`, or a vault redeem path, and reads no `exitFeeBps` /
+`activeAdapterCount`. No overlap with any of the five targets:
+
+- `faucet_eth` / `faucet_rm` / `fund_usdc` — faucet drip round-trips through
+  distinct fixture methods `demo_seeding` never calls.
+- `governance` — `demo_seeding` reads router weights as static config; it
+  never touches `RouterGovernance` or `setVotingPower`.
+- `vault_deposit_redeem` — `demo_seeding` asserts `totalAssets` rose after
+  seeding, not a redeem-returns-principal-within-tolerance round trip, and
+  never reads `exitFeeBps` / `activeAdapterCount`.
 
 **Why suite 14's matrix, not a push-to-`dev`-only tier or nightly:** the four
 wired targets only add a `Fixture::new()` boot plus a handful of RPC

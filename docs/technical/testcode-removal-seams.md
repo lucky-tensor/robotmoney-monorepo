@@ -145,8 +145,10 @@ Production / harness code (removal targets for #912):
   sync when the var is deleted.
 - `testing/smoke-test/tests/vault_deposit_redeem.rs` — deleted by issue #1311
   (its assertions were already covered by `smoke-test::fixture_meta` and
-  `rmpc-fork-e2e::vault_deposit_redeem_smoke` / `devnet_adapter_round_trip`,
-  all of which run today); no longer a passthrough-reference removal target.
+  `rmpc-fork-e2e::vault_deposit_redeem_smoke`, both of which genuinely execute
+  today; `rmpc-fork-e2e::devnet_adapter_round_trip` does NOT count -- it
+  unconditionally self-skips in CI because `RMPC_FORK_RPC_URL` is never set
+  in suite-05, issue #1239); no longer a passthrough-reference removal target.
 
 Test-only references (likely retained, decide in #901):
 

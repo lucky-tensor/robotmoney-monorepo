@@ -77,6 +77,13 @@ jobs:
     name: smoke-test-guards
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # feature-correctness (not system-correctness): this job runs on every
+    # PR including drafts (no draft-exclusion `if:`), matching
+    # feature-correctness's pr_draft:run/pr_r4r:run shape. See the `devnet`
+    # job below for why the heavier integration job below is classed the
+    # same way despite being system-correctness by content.
+    env:
+      CI_CLASS: feature-correctness
     steps:
       - uses: actions/checkout@v4
         with:
@@ -158,11 +165,15 @@ jobs:
   # runner-minutes, not suite latency. See docs/development/ci-suites.md §14
   # ("Resolution of the five smoke-test devnet targets") for the measured
   # figures and the cost tradeoff this was weighed against. `vault_deposit_redeem`
-  # was deleted instead of wired: both of its assertions (vault_on_chain_state ->
-  # fixture_meta::vault_has_zero_exit_fee_and_one_active_adapter; the deposit/redeem
-  # round trip -> rmpc-fork-e2e::vault_deposit_redeem_smoke and
-  # rmpc-fork-e2e::devnet_adapter_round_trip, both already run by suite-05) were
-  # already made by a suite that runs.
+  # was deleted instead of wired: both of its assertions were already made by a
+  # suite that runs -- vault_on_chain_state -> fixture_meta's
+  # vault_has_zero_exit_fee_and_one_active_adapter; the deposit/redeem round
+  # trip -> rmpc-fork-e2e::vault_deposit_redeem_smoke (suite-05 anvil-goldens,
+  # confirmed genuinely executing, not skipped). rmpc-fork-e2e's
+  # devnet_adapter_round_trip is NOT counted as coverage here despite suite-05
+  # naming it: it unconditionally self-skips in CI (RMPC_FORK_RPC_URL is never
+  # set there -- issue #1239), so citing it would repeat the exact false-green
+  # pattern this file exists to prevent.
   devnet:
     name: smoke-test-devnet-${{ matrix.binary }}
     runs-on: ubuntu-latest
@@ -176,6 +187,18 @@ jobs:
     # all lighter than fixture_meta, so the existing 70-min ceiling already covers
     # them with headroom.
     timeout-minutes: 70
+    # feature-correctness, not system-correctness, despite this being a full
+    # devnet integration matrix: this job has no draft-exclusion `if:` and
+    # runs on every PR to dev including drafts (pre-existing, by design --
+    # see "WHY THIS SUITE EXISTS" above: a broken Fixture::new() must be
+    # caught here before suites 7/8/10/11/12 pay their own boot cost).
+    # system-correctness mandates skip-on-draft, which would misdescribe
+    # this job's actual (intentional) trigger shape -- declaring it here
+    # would make `ci lint` flag a must-not-run-pr_draft error against
+    # behavior nobody wants changed. feature-correctness is the class whose
+    # cells actually match what this job does today.
+    env:
+      CI_CLASS: feature-correctness
     strategy:
       fail-fast: false
       matrix:

@@ -19,6 +19,9 @@
 # resolved by issue #1311: faucet_eth/faucet_rm/fund_usdc/governance are now
 # wired into suite-14-smoke-test.yml's devnet matrix, and vault_deposit_redeem
 # was deleted (its assertions were already made by smoke-test::fixture_meta and
-# rmpc-fork-e2e::vault_deposit_redeem_smoke / devnet_adapter_round_trip, all of
-# which run today). See docs/development/ci-suites.md §14 for the outcome
-# record and measured runtimes.
+# rmpc-fork-e2e::vault_deposit_redeem_smoke, both of which genuinely execute
+# today -- rmpc-fork-e2e::devnet_adapter_round_trip does NOT count despite
+# suite-05 naming it: it unconditionally self-skips in CI because
+# RMPC_FORK_RPC_URL is never set there, per issue #1239). See
+# docs/development/ci-suites.md §14 for the outcome record and measured
+# runtimes.
