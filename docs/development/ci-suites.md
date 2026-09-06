@@ -1005,12 +1005,21 @@ and `rmpc-fork-e2e::governance` analyses above): `demo_seeding`'s assertions
 `VaultRegistry.listVaults()` returning four Active vaults,
 `PortfolioRouter.getWeights()` matching the 8500/500/500/500 split, and all
 four vaults reporting non-zero `totalAssets` after `seed_demo_depositors`. It
-calls none of `fund_eth_from_harness`, `fund_rm_token`, `fund_usdc`,
-`setVotingPower`, or a vault redeem path, and reads no `exitFeeBps` /
-`activeAdapterCount`. No overlap with any of the five targets:
+calls none of `fund_eth_from_harness`, `fund_rm_token`, or `setVotingPower`,
+and reads no `exitFeeBps` / `activeAdapterCount`. It does call
+`self.fund_usdc(...)` indirectly, via `seed_demo_depositors` funding each
+simulated depositor before their deposit -- but only as unasserted setup
+plumbing: `demo_seeding` never checks `fund_usdc.rs`'s distinguishing
+behavior (the exact balance delta, the `Transfer` log's
+`from=HARNESS_USDC_HOLDER` shape, signature recovery, or the Geth-vs-Anvil
+backend check). No overlap with any of the five targets:
 
-- `faucet_eth` / `faucet_rm` / `fund_usdc` — faucet drip round-trips through
-  distinct fixture methods `demo_seeding` never calls.
+- `faucet_eth` / `faucet_rm` — faucet drip round-trips through distinct
+  fixture methods (`fund_eth_from_harness`, `fund_rm_token`) `demo_seeding`
+  never calls.
+- `fund_usdc` — `demo_seeding` calls the same `fund_usdc` method as setup
+  plumbing but asserts none of its distinguishing behavior (see above); the
+  two targets are not redundant.
 - `governance` — `demo_seeding` reads router weights as static config; it
   never touches `RouterGovernance` or `setVotingPower`.
 - `vault_deposit_redeem` — `demo_seeding` asserts `totalAssets` rose after
