@@ -36,19 +36,31 @@
 # variables, missing error handling, path injection) can silently pass all output
 # tests but still misbehave at runtime. shellcheck catches these statically.
 #
-# THERE IS NO paths: FILTER HERE (corrected in #1251)
-# This header used to claim a paths: filter restricted the suite to the plugin
-# tree. No such filter exists. The trigger below is a bare `pull_request:`, so
-# this suite runs on EVERY pull request in the repo, including ones that touch
-# nothing under plugins/robotmoney-analyst/.
-# The reasoning for wanting a filter still holds: this suite only verifies
-# robotmoney-analyst plugin artifacts and the helper script, it checks no
-# cross-cutting repo invariant, and a filter would keep it off unrelated
-# changes. But nothing on record says whether the missing filter is an
-# oversight or a deliberate choice, so do not read this comment as a
-# justification for the current trigger. #1251 corrected the comment only and
-# deliberately left the trigger alone — narrowing it is a behaviour change that
-# needs its own decision.
+# WHY THE paths: FILTER IS SCOPED TO THE PLUGIN TREE (issue #1260)
+# Until #1260 this suite ran on a bare `pull_request:`, so it fired on EVERY
+# pull request in the repo. #1251 corrected the header, which had described a
+# filter that did not exist, and deliberately left the trigger alone because
+# narrowing it is a behaviour change. #1260 made that decision: scope it.
+#
+# The safety argument, which is the part worth re-checking before you edit the
+# list below. This repo has twice shipped a filter that hid the suite's own
+# subject (#1203, #1235), so a paths: filter is only safe when every change
+# shape the suite is meant to catch necessarily touches a listed path. This one
+# does: the suite's entire subject is the robotmoney-analyst plugin's own
+# artifacts — plugin.json, the SKILL.md, the fetch helper, and its fixtures —
+# and `plugins/robotmoney-analyst/test/run-tests.sh` reads nothing outside its
+# own tree (no `../` escapes, no repo-root walk, no git diff). It asserts no
+# cross-cutting repo invariant; the restricted-path check that once claimed to
+# do so was removed above and must not come back. So a change that can break
+# this suite cannot land without touching `plugins/robotmoney-analyst/**`.
+# The workflow file itself is listed so edits to the suite still test the suite.
+#
+# If you ever give the helper a dependency outside the plugin tree — a shared
+# script, a fixture, a schema — add that path here in the same commit, or the
+# suite goes blind to it.
+#
+# The push: trigger stays unfiltered, matching suite-12 and suite-16: merged
+# commits on dev get full coverage regardless of what they touched.
 
 name: robotmoney-analyst-plugin-checks
 
@@ -57,6 +69,9 @@ on:
   push:
     branches: [dev, "dev-phase-*"]
   pull_request:
+    paths:
+      - "plugins/robotmoney-analyst/**"
+      - ".github/workflows/suite-15-regime-classifier.yml"
   workflow_dispatch:
 
 # CI velocity tiers (issue #600): cancel superseded PR runs so a re-push does
