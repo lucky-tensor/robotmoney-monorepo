@@ -12,23 +12,35 @@
 # generated file below, and this suite never reads abi.ts. As of issue #1281
 # the dapp side of that gap is closed by
 # clients/dapp/tests/unit/abi-parity.test.ts, which fails if abi.ts drifts
-# from the canonical signatures in abi.generated.ts. The Rust/explorer-indexer
-# side of the gap (the hand-edited rmpc ABI files below and
-# services/explorer-indexer's independently hand-maintained event tables)
-# remains open, tracked in issue #1346.
+# from the canonical signatures in abi.generated.ts.
 #
 # WHICH FILES ARE DRIFT-GATED
 # - clients/rust-payment-client/abi/Erc20.json
 # - clients/rust-payment-client/abi/RobotMoneyGateway.json
 # - clients/dapp/src/lib/abi.generated.ts
 #
-# The following files are NOT yet drift-gated because the Rust client
-# depends on hand-edited entries that diverge from the current Foundry
-# artifacts (known schema drift, tracked separately):
-# - clients/rust-payment-client/abi/MockVault.json
-# - clients/rust-payment-client/abi/PortfolioRouter.json
-# - clients/rust-payment-client/abi/RouterGovernance.json
-# - clients/rust-payment-client/abi/VaultRegistry.json
+# THE OTHER TWO GATES IN THIS JOB (issue #1346)
+# Regenerate-and-diff only covers files this suite regenerates. Two holes sat
+# outside it, both now closed here:
+#
+# 1. UN-GATED BINDING INVENTORY. Seven hand-maintained files under
+#    clients/rust-payment-client/abi/ are not regenerated. The generator's
+#    header used to call them "known schema drift, tracked separately" and name
+#    no issue, so nothing tracked them and nothing noticed when two more files
+#    joined the directory without ever being listed. One of them,
+#    VaultRegistry.json, still carries the stale nine-field getVault the dapp
+#    fixed in #1348. check_abi_binding_inventory.py now requires every binding
+#    on disk to be either drift-gated or recorded against an OPEN tracking
+#    issue (#1362), so an un-gated file can no longer persist untracked.
+#
+# 2. SOLIDITY-TRUTH EVENT TOPICS. services/explorer-indexer/src/abi.rs keeps
+#    three hand-maintained copies of every event signature, and its
+#    abi_drift_gate compares them only to each other — it reads no Solidity, so
+#    a real contract change leaves it green while the indexer silently drops
+#    every log of that event. The explorer-indexer step below re-derives 27
+#    topic-0 hashes from the out/ artifacts this job already builds. That step
+#    lives here rather than in suite-08 precisely because this is the job with
+#    `forge build`; without artifacts the test fails loudly, it never skips.
 #
 # HOW TO FIX A FAILURE
 # Run the following from the repo root and commit the updated files:
@@ -58,7 +70,13 @@ on:
       - "clients/rust-payment-client/abi/RobotMoneyGateway.json"
       - "clients/dapp/src/lib/abi.generated.ts"
       - ".github/scripts/generate_abi_bindings.sh"
+      - ".github/scripts/check_abi_binding_inventory.py"
       - ".github/workflows/suite-16-abi-drift.yml"
+      # Issue #1346: the un-gated inventory covers every binding in this
+      # directory, and the topic-0 cross-check reads abi.rs, so a change to
+      # either must re-run this suite.
+      - "clients/rust-payment-client/abi/**"
+      - "services/explorer-indexer/src/abi.rs"
   workflow_dispatch:
 
 # CI velocity tiers (issue #600): cancel superseded PR runs so a re-push does
@@ -73,11 +91,38 @@ jobs:
   abi-drift:
     name: abi-drift-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30 (was 15): issue #1346 added a Rust build of explorer-indexer so the
+    # topic-0 cross-check can run against the artifacts this job already builds.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # UN-GATED BINDING INVENTORY (issue #1346)
+      # Pure Python over the generator header, this workflow, and the binding
+      # directory — no toolchain, seconds to run, so it goes first and gives its
+      # answer even when the Foundry or Rust build is broken.
+      #
+      # The self-test runs BEFORE the real check: it seeds synthetic trees for
+      # each defect shape (an un-gated entry with no tracking issue, a binding
+      # in neither block, a listed file that does not exist, a gated file
+      # nothing diffs, a gated file that only appears in the paths: trigger, a
+      # file claimed as both) and asserts the guard fires on each. A guard only
+      # ever observed passing is a guard nobody has checked.
+      - name: Self-test the ABI binding inventory guard
+        run: python3 .github/scripts/check_abi_binding_inventory.py --self-test
+
+      # --verify-issues-open resolves each cited tracking issue through `gh` and
+      # fails when it is not OPEN. Closing #1362 without actually bringing the
+      # seven files under the gate therefore turns this suite red, instead of
+      # quietly restoring the "tracked separately" fiction it replaced. The flag
+      # is always passed here: the check must never silently degrade to the
+      # offline half just because a token is missing.
+      - name: Every ABI binding is drift-gated or cites an open tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/check_abi_binding_inventory.py --verify-issues-open
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -125,3 +170,38 @@ jobs:
             exit 1
           fi
           echo "ABI bindings are up to date."
+
+      # SOLIDITY-TRUTH EVENT TOPICS FOR THE INDEXER (issue #1346)
+      # This is the only job in the repository that both compiles the contracts
+      # and can run Rust, which is why the test lives here and not in suite-08:
+      # suite-08 has no Foundry, so `out/` would be absent and the test would
+      # fail on every run. It reads the artifacts produced by `forge build`
+      # above, so it must stay after that step.
+      #
+      # The test panics with instructions when `out/` is missing rather than
+      # skipping, and the executed-count wrapper fails RED when zero tests are
+      # collected — so neither a missing artifact nor a filter that matches
+      # nothing can present as a green pass.
+      #
+      # --exact keeps the filter off `abi_drift_gate`, which suite-08 owns and
+      # which deliberately needs no artifacts.
+      #
+      # ON INVARIANT (B) OF check_rust_test_target_compile_coverage.py: this
+      # step runs one named `--lib` test and does NOT compile explorer-indexer's
+      # tests/ binaries, because it is not that crate's unit gate — suite-08
+      # (`cargo test --no-run`) and suite-04's `--all-targets` are. Note the
+      # guard cannot see this call at all: it parses literal `cargo` tokens out
+      # of run blocks, and this goes through the wrapper, as suite-08's own
+      # wrapped steps already do. Recording that here so the exemption is a
+      # stated decision rather than an accident of the parser.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Indexer event topic-0 hashes match the Foundry artifacts
+        run: |
+          bash .github/scripts/cargo_test_require_executed.sh \
+            -p explorer-indexer --lib \
+            -- abi::tests::event_topics_match_foundry_artifacts --exact --nocapture

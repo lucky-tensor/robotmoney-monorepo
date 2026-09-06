@@ -59,7 +59,17 @@ const DEPOSIT_USDC = 5_000_000n;
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 180_000;
 
-/** Raw `vault.balanceOf(who)` via eth_call — no wallet needed. */
+/**
+ * Raw `vault.balanceOf(who)` via eth_call — no wallet needed.
+ *
+ * Throws on a JSON-RPC error rather than reporting a zero balance (issue
+ * #1346). `0n` is a meaningful on-chain fact to every caller here, so a node
+ * that refused the call must not be indistinguishable from a wallet holding
+ * nothing. Under the poll below that mattered twice over: an errored eth_call
+ * would otherwise be read as "not settled yet" and burn the full 180s timeout
+ * before failing with "geth state-lag never settled" — naming the wrong cause
+ * after the longest possible wait.
+ */
 async function vaultBalanceOf(rpc: string, vault: string, who: string): Promise<bigint> {
   const data = encodeFunctionData({
     abi: vaultAbi,
@@ -76,7 +86,10 @@ async function vaultBalanceOf(rpc: string, vault: string, who: string): Promise<
       params: [{ to: vault, data }, "latest"],
     }),
   });
-  const j = (await res.json()) as { result?: string };
+  const j = (await res.json()) as { result?: string; error?: { message?: string } };
+  if (j.error) {
+    throw new Error(`eth_call vault.balanceOf reverted or failed: ${j.error.message ?? "unknown"}`);
+  }
   return j.result && j.result !== "0x" ? BigInt(j.result) : 0n;
 }
 
@@ -176,9 +189,11 @@ test.describe("VaultRegistry getVault decode — live receipt rows", () => {
     // returns 0. That is the documented geth read-after-write state-lag class
     // (`docs/testing/geth-state-lag.md`), and sampling once here is what
     // reddened unrelated PRs in issue #1366. The deposit itself is already
-    // proven non-reverted by depositAsAdmin's receipt assertions above, so a
-    // zero here can only be the lag — poll until it settles, and fail loudly
-    // naming the lag if it never does.
+    // proven non-reverted by depositAsAdmin's receipt assertions above, and
+    // vaultBalanceOf throws rather than returning 0n when the node refuses the
+    // call (issue #1346) — so a zero reaching this poll really is the lag and
+    // nothing else. Poll until it settles, and fail loudly naming the lag if it
+    // never does.
     let reads = 0;
     const shares = await waitUntil(async () => {
       reads += 1;

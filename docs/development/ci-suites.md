@@ -589,6 +589,62 @@ below is what keeps it from drifting into a dangling reference.
 
 ---
 
+### 16. ABI drift gate
+**File:** `.github/workflows/suite-16-abi-drift.yml`
+**Environment:** `none` (Foundry + Bun + Rust toolchains, no chain)
+**Tier / triggers:** LIGHT — `pull_request` filtered on `contracts/**`,
+`foundry.toml`, the drift-gated binding files, `clients/rust-payment-client/abi/**`,
+`services/explorer-indexer/src/abi.rs`, and this suite's own scripts; plus
+`push` to `dev` / `dev-phase-*`.
+
+Foundry's `out/` is the single canonical ABI source. Every hand-maintained copy
+drifts, and history says so: the indexer shipped live ABI drift (#366), the dapp
+called a router selector no contract defined (#1281), and `registryAbi.getVault`
+decoded a `VaultRegistry` shape that no longer existed (#1348).
+
+**Three independent gates, in increasing cost order:**
+
+1. **Un-gated binding inventory** (`check_abi_binding_inventory.py`, issue #1346).
+   `generate_abi_bindings.sh`'s header is the inventory of every client ABI
+   binding, split into drift-gated and un-gated. The check fails when a binding
+   exists on disk but appears in neither block, when an un-gated entry cites no
+   tracking issue, when the cited issue is not OPEN (`--verify-issues-open`, via
+   `gh`), or when a file claimed as drift-gated is not actually named in this
+   workflow's `git diff --exit-code`. It replaces a comment that said "known
+   schema drift, tracked separately" and named no issue for four files — while
+   two more had joined the directory unlisted. The seven currently un-gated
+   files are tracked by #1362; closing that issue without doing the work turns
+   this suite red. Self-tested (`--self-test`) against seven synthetic defect
+   shapes before the real run.
+2. **Regenerate and diff.** `forge build`, then `generate_abi_bindings.sh`, then
+   `git diff --exit-code` over `Erc20.json`, `RobotMoneyGateway.json` and
+   `abi.generated.ts`. Fix a failure by running those two commands locally and
+   committing the result.
+3. **Indexer topic-0 cross-check**
+   (`cargo test -p explorer-indexer --lib -- abi::tests::event_topics_match_foundry_artifacts`,
+   issue #1346). Re-derives 27 event topic-0 hashes from the `out/` artifacts
+   built in step 2 and compares them to what the indexer filters `eth_getLogs`
+   on. This is the only gate that reads Solidity: suite 8's `abi_drift_gate`
+   compares `abi.rs`'s three hand-maintained copies of every signature *only to
+   each other*, so all three can be consistently wrong and it stays green. The
+   test lives here rather than in suite 8 because this is the only job that both
+   compiles the contracts and runs Rust. It panics with instructions when `out/`
+   is absent rather than skipping, and runs under
+   `cargo_test_require_executed.sh` so a zero-collected run is red.
+
+**Gotchas:**
+- The job runs `forge build` before generation, so `out/` always reflects
+  current sources rather than a cached artifact.
+- The job does not commit; contributors commit the generated files so the diff
+  is reviewable in the PR.
+- Step 3 runs one named `--lib` test and deliberately does not compile
+  `explorer-indexer`'s `tests/` binaries — it is not that crate's unit gate
+  (suite 8 and suite 4's `--all-targets` are). See the step comment.
+- `generate_abi_bindings.sh` emits `AgentTokenVault` but not `ProtocolAssetVault`:
+  only the former declares `shortlist()`, which is itself a defect (#1364).
+
+---
+
 ### 18. Secrets scan (gitleaks)
 **Suggested file:** `.github/workflows/suite-18-secrets-scan.yml`
 **Environment:** `none`

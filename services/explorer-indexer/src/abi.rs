@@ -5,12 +5,24 @@
 //! `contracts/RobotMoneyVault.sol`, `contracts/VaultRegistry.sol`, and the canonical event signatures
 //! in `docs/technical/vault-registry-decisions.md` §3.5.
 //!
-//! # ABI Drift Map (dev-scout #383 findings — 2026-05-15)
+//! # ABI Drift Map (dev-scout #383 findings — 2026-05-15) — HISTORICAL RECORD
 //!
 //! The following divergences were identified between the `sol!` declarations
 //! in this file and the compiled Solidity sources.  Each item maps to the
 //! downstream fix issue that will correct it.  No runtime behavior is changed
 //! by this scout pass — only documentation is added.
+//!
+//! **Read this section as a dated record, not as current state (issue #1346).**
+//! Every `Foo.sol:NN` reference *inside this section* is the line number as it
+//! stood on 2026-05-15; the sources have moved since and these numbers are
+//! deliberately left frozen so the record still reads as the snapshot it was.
+//! The `AgentAuthorized` / `AgentRevoked` / `VaultRegistered` /
+//! `VaultStatusChanged` / `ProposalCreated` / `VoteCast` / `ProposalExecuted` /
+//! `WeightsApplied` drifts below were all corrected by issue #366 (closed) and
+//! no longer exist.  The **live, maintained** citations are the ones on the
+//! `sol!` declarations, the `Topics` fields, and the `abi_drift_gate` table
+//! further down this file — those were re-derived from the current sources in
+//! issue #1346 and are the ones to trust.
 //!
 //! ## IGatewayEvents — `contracts/gateway/interfaces/IGateway.sol`
 //!
@@ -153,7 +165,7 @@ sol! {
     #[allow(missing_docs)]
     interface IRouterGovernanceEvents {
         /// Emitted when a new governance proposal is created.
-        /// RouterGovernance.sol:106
+        /// RouterGovernance.sol:163
         event ProposalCreated(
             uint256 indexed proposalId,
             address indexed proposer,
@@ -163,7 +175,7 @@ sol! {
         );
 
         /// Emitted when a voter casts a vote in favour.
-        /// RouterGovernance.sol:119
+        /// RouterGovernance.sol:176
         event VoteCast(
             uint256 indexed proposalId,
             address indexed voter,
@@ -172,11 +184,11 @@ sol! {
         );
 
         /// Emitted when a queued proposal is executed.
-        /// RouterGovernance.sol:126
+        /// RouterGovernance.sol:183
         event ProposalExecuted(uint256 indexed proposalId, address indexed executor);
 
         /// Emitted by RouterGovernance when the router weight vector is updated.
-        /// RouterGovernance.sol:132
+        /// RouterGovernance.sol:189
         event WeightsApplied(uint256 indexed proposalId, address[] vaults, uint256[] bps);
     }
 
@@ -184,7 +196,7 @@ sol! {
     /// `SolEvent::SIGNATURE_HASH` lines up with the on-chain topic.
     #[allow(missing_docs)]
     interface IGatewayEvents {
-        /// IGateway.sol:74
+        /// IGateway.sol:97
         event AgentAuthorized(
             address indexed agent,
             address indexed owner,
@@ -193,7 +205,7 @@ sol! {
             uint256 maxPerWindow,
             address shareReceiver
         );
-        /// IGateway.sol:85
+        /// IGateway.sol:108
         event AgentRevoked(address indexed agent, address indexed owner);
         event Paused(address indexed by);
         event Unpaused(address indexed by);
@@ -206,7 +218,7 @@ sol! {
             uint256 sharesMinted,
             uint64 windowId
         );
-        /// IGateway.sol:139 — emitted on every successful agent withdrawal.
+        /// IGateway.sol:162 — emitted on every successful agent withdrawal.
         event AgentWithdrawal(
             bytes32 indexed paymentId,
             bytes32 indexed orderId,
@@ -217,7 +229,7 @@ sol! {
             address assetRecipient,
             uint64  windowId
         );
-        /// IGateway.sol:119 — emitted for router-path deposits (multi-leg).
+        /// IGateway.sol:142 — emitted for router-path deposits (multi-leg).
         event AgentDepositRouted(
             bytes32 indexed paymentId,
             bytes32 indexed orderId,
@@ -279,7 +291,7 @@ sol! {
     #[allow(missing_docs)]
     interface IVaultRegistryEvents {
         /// Emitted once when a vault is added to the registry.
-        /// VaultRegistry.sol:67
+        /// VaultRegistry.sol:146
         event VaultRegistered(
             address indexed vault,
             string  name,
@@ -287,7 +299,7 @@ sol! {
         );
 
         /// Emitted each time an admin changes a vault's operational status.
-        /// VaultRegistry.sol:73 — `VaultStatus` enum encodes as uint8 in ABI.
+        /// VaultRegistry.sol:152 — `VaultStatus` enum encodes as uint8 in ABI.
         event VaultStatusChanged(
             address indexed vault,
             uint8   indexed newStatus,
@@ -306,7 +318,7 @@ sol! {
     #[allow(missing_docs)]
     interface IPortfolioRouterEvents {
         /// Emitted once per vault leg on each `deposit()` call.
-        /// PortfolioRouter.sol:71
+        /// PortfolioRouter.sol:122
         event RouterDeposit(
             address indexed depositor,
             address indexed vault,
@@ -316,12 +328,12 @@ sol! {
         );
 
         /// Emitted when the voted weight vector is set directly by admin.
-        /// PortfolioRouter.sol:114
+        /// PortfolioRouter.sol:133
         event WeightsSet(address[] vaults, uint256[] bps);
 
         /// Emitted when the default (below-quorum fallback) weight vector is
         /// set by ADMIN_ROLE.
-        /// PortfolioRouter.sol:120
+        /// PortfolioRouter.sol:139
         event DefaultWeightsSet(address[] vaults, uint256[] bps);
     }
 
@@ -389,7 +401,7 @@ sol! {
     #[allow(missing_docs)]
     interface IConsensusRecommendationReceiptEvents {
         /// Emitted when a committee submitter records a receipt commitment.
-        /// ConsensusRecommendationReceipt.sol — three indexed params (EVM limit).
+        /// IConsensusRecommendationReceipt.sol:51 — three indexed params (EVM limit).
         event ReceiptRecorded(
             bytes32 indexed receiptId,
             address indexed submitter,
@@ -400,6 +412,7 @@ sol! {
         );
 
         /// Emitted when ADMIN_ROLE (the timelock) releases a recorded receipt.
+        /// IConsensusRecommendationReceipt.sol:63
         event ReceiptReleased(bytes32 indexed receiptId, address indexed releasedBy, uint64 releasedAt);
     }
 }
@@ -410,9 +423,9 @@ pub struct Topics {
     pub agent_authorized: B256,
     pub agent_revoked: B256,
     pub agent_deposit: B256,
-    /// Agent-initiated withdrawal emitted by IGateway.sol:139.
+    /// Agent-initiated withdrawal emitted by IGateway.sol:162.
     pub agent_withdrawal: B256,
-    /// Multi-leg router deposit emitted by IGateway.sol:119.
+    /// Multi-leg router deposit emitted by IGateway.sol:142.
     pub agent_deposit_routed: B256,
     pub paused: B256,
     pub unpaused: B256,
@@ -428,12 +441,12 @@ pub struct Topics {
     pub vote_cast: B256,
     pub proposal_executed: B256,
     pub weights_applied: B256,
-    /// Per-leg deposit emitted by PortfolioRouter.sol:71.
+    /// Per-leg deposit emitted by PortfolioRouter.sol:122.
     pub router_deposit: B256,
-    /// Voted weight vector set directly by admin — PortfolioRouter.sol:114.
+    /// Voted weight vector set directly by admin — PortfolioRouter.sol:133.
     /// Emitted by `setWeights()` (demo-seed and direct-admin path, not governance).
     pub weights_set: B256,
-    /// Default (fallback) weight vector set by ADMIN_ROLE — PortfolioRouter.sol:120.
+    /// Default (fallback) weight vector set by ADMIN_ROLE — PortfolioRouter.sol:139.
     /// Emitted by `setDefaultWeights()`.
     pub default_weights_set: B256,
     /// ERC-4626 Deposit event emitted by any vault on every deposit.
@@ -561,6 +574,329 @@ impl Default for Topics {
 mod tests {
     use super::*;
     use alloy_sol_types::SolEvent;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    /// Foundry's build-output directory (`out = "out"` in `foundry.toml`),
+    /// resolved from this crate's manifest directory so the test is
+    /// independent of the working directory `cargo test` was launched from.
+    fn foundry_out_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("out")
+    }
+
+    /// Canonical ABI type of one parameter, expanding tuples recursively so a
+    /// struct parameter renders as `(address,uint256)` — the form that goes
+    /// into the topic-0 preimage.
+    fn param_type(param: &serde_json::Value) -> String {
+        let ty = param["type"].as_str().unwrap_or_default();
+        match ty.strip_prefix("tuple") {
+            Some(array_suffix) => {
+                let components = param["components"]
+                    .as_array()
+                    .map(|c| c.iter().map(param_type).collect::<Vec<_>>().join(","))
+                    .unwrap_or_default();
+                format!("({components}){array_suffix}")
+            }
+            None => ty.to_string(),
+        }
+    }
+
+    /// Read a Foundry artifact and return every event it declares as
+    /// `name -> [topic-0, ...]` (a `Vec` because Solidity permits overloads).
+    ///
+    /// Panics — loudly, never skips — when the artifact is missing. A missing
+    /// `out/` means `forge build` did not run, and a drift gate that quietly
+    /// passes when it cannot read the thing it guards is the exact defect
+    /// issue #1346 exists to fix.
+    fn artifact_event_topics(contract_dir: &str, contract: &str) -> BTreeMap<String, Vec<B256>> {
+        let out = foundry_out_dir();
+        let path = out.join(contract_dir).join(format!("{contract}.json"));
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read Foundry artifact {}: {e}\n\
+                 This test derives event topic-0 hashes from the compiled contracts, so the \
+                 artifacts must exist. Run `forge build` from the repository root first \
+                 (CI: see the `forge build` step in .github/workflows/suite-16-abi-drift.yml).",
+                path.display()
+            )
+        });
+        let artifact: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("malformed Foundry artifact {}: {e}", path.display()));
+        let entries = artifact["abi"]
+            .as_array()
+            .unwrap_or_else(|| panic!("Foundry artifact {} has no `abi` array", path.display()));
+
+        let mut topics: BTreeMap<String, Vec<B256>> = BTreeMap::new();
+        for entry in entries {
+            if entry["type"].as_str() != Some("event") {
+                continue;
+            }
+            let name = entry["name"].as_str().unwrap_or_default();
+            let params = entry["inputs"]
+                .as_array()
+                .map(|p| p.iter().map(param_type).collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            let signature = format!("{name}({params})");
+            topics
+                .entry(name.to_string())
+                .or_default()
+                .push(keccak256(signature.as_bytes()));
+        }
+        topics
+    }
+
+    /// **The Solidity-truth ABI drift gate (issue #1346).**
+    ///
+    /// `abi_drift_gate` below compares this file's three hand-maintained
+    /// copies of every event signature (the `sol!` declarations, the
+    /// `Topics::new()` keccak literals, and its own `SOL_SIGS` table) only
+    /// against *each other*. It reads no Solidity, so it cannot fail when a
+    /// contract changes — only when someone edits one of the three copies and
+    /// forgets the other two. Every copy can be simultaneously, consistently
+    /// wrong and that gate still passes green.
+    ///
+    /// This test closes that hole: it re-derives topic-0 from the compiled
+    /// Foundry artifacts in `out/` — the same bytes the deployed contract
+    /// emits — and fails if the indexer's topic differs. A Solidity signature
+    /// change with no corresponding `abi.rs` change turns this RED, which is
+    /// exactly the class of silent event-drop the indexer shipped in #366.
+    ///
+    /// Requires `forge build` to have populated `out/`; it panics with
+    /// instructions rather than skipping when the artifacts are absent.
+    #[test]
+    fn event_topics_match_foundry_artifacts() {
+        let out = foundry_out_dir();
+        assert!(
+            out.is_dir(),
+            "Foundry out/ directory not found at {} — run `forge build` from the repository \
+             root before this test. This gate derives topic-0 from compiled artifacts and \
+             must never pass without them.",
+            out.display()
+        );
+
+        let t = Topics::new();
+
+        // (artifact dir, contract, event name, the topic the indexer filters on).
+        // One entry per topic-0 in `Topics` that a first-party contract emits.
+        let checks: &[(&str, &str, &str, B256)] = &[
+            // IGateway events, taken from the concrete implementation's artifact
+            // (RobotMoneyGateway inherits the IGateway event surface).
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "AgentAuthorized",
+                t.agent_authorized,
+            ),
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "AgentRevoked",
+                t.agent_revoked,
+            ),
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "AgentDeposit",
+                t.agent_deposit,
+            ),
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "AgentDepositRouted",
+                t.agent_deposit_routed,
+            ),
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "AgentWithdrawal",
+                t.agent_withdrawal,
+            ),
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "Paused",
+                t.paused,
+            ),
+            (
+                "RobotMoneyGateway.sol",
+                "RobotMoneyGateway",
+                "Unpaused",
+                t.unpaused,
+            ),
+            // RobotMoneyVault — vault state-snapshot triggers plus the two
+            // ERC-4626 standard events the vault inherits.
+            (
+                "RobotMoneyVault.sol",
+                "RobotMoneyVault",
+                "Allocated",
+                t.vault_allocated,
+            ),
+            (
+                "RobotMoneyVault.sol",
+                "RobotMoneyVault",
+                "Pulled",
+                t.vault_pulled,
+            ),
+            (
+                "RobotMoneyVault.sol",
+                "RobotMoneyVault",
+                "Rebalanced",
+                t.vault_rebalanced,
+            ),
+            (
+                "RobotMoneyVault.sol",
+                "RobotMoneyVault",
+                "ExitFeeCharged",
+                t.vault_exit_fee_charged,
+            ),
+            (
+                "RobotMoneyVault.sol",
+                "RobotMoneyVault",
+                "Deposit",
+                t.erc4626_deposit,
+            ),
+            (
+                "RobotMoneyVault.sol",
+                "RobotMoneyVault",
+                "Withdraw",
+                t.erc4626_withdraw,
+            ),
+            // VaultRegistry.
+            (
+                "VaultRegistry.sol",
+                "VaultRegistry",
+                "VaultRegistered",
+                t.vault_registered,
+            ),
+            (
+                "VaultRegistry.sol",
+                "VaultRegistry",
+                "VaultStatusChanged",
+                t.vault_status_changed,
+            ),
+            // RouterGovernance.
+            (
+                "RouterGovernance.sol",
+                "RouterGovernance",
+                "ProposalCreated",
+                t.proposal_created,
+            ),
+            (
+                "RouterGovernance.sol",
+                "RouterGovernance",
+                "VoteCast",
+                t.vote_cast,
+            ),
+            (
+                "RouterGovernance.sol",
+                "RouterGovernance",
+                "ProposalExecuted",
+                t.proposal_executed,
+            ),
+            (
+                "RouterGovernance.sol",
+                "RouterGovernance",
+                "WeightsApplied",
+                t.weights_applied,
+            ),
+            // PortfolioRouter.
+            (
+                "PortfolioRouter.sol",
+                "PortfolioRouter",
+                "RouterDeposit",
+                t.router_deposit,
+            ),
+            (
+                "PortfolioRouter.sol",
+                "PortfolioRouter",
+                "WeightsSet",
+                t.weights_set,
+            ),
+            (
+                "PortfolioRouter.sol",
+                "PortfolioRouter",
+                "DefaultWeightsSet",
+                t.default_weights_set,
+            ),
+            // InvestmentCommitteePolicy — issue #1053.
+            (
+                "InvestmentCommitteePolicy.sol",
+                "InvestmentCommitteePolicy",
+                "AgentRegistered",
+                t.ic_agent_registered,
+            ),
+            (
+                "InvestmentCommitteePolicy.sol",
+                "InvestmentCommitteePolicy",
+                "AgentRevoked",
+                t.ic_agent_revoked,
+            ),
+            (
+                "InvestmentCommitteePolicy.sol",
+                "InvestmentCommitteePolicy",
+                "VoteSubmitted",
+                t.ic_vote_submitted,
+            ),
+            // ConsensusRecommendationReceipt — issue #1247.
+            (
+                "ConsensusRecommendationReceipt.sol",
+                "ConsensusRecommendationReceipt",
+                "ReceiptRecorded",
+                t.consensus_receipt_recorded,
+            ),
+            (
+                "ConsensusRecommendationReceipt.sol",
+                "ConsensusRecommendationReceipt",
+                "ReceiptReleased",
+                t.consensus_receipt_released,
+            ),
+        ];
+
+        // Cache each artifact so a contract's JSON is parsed once, not once per event.
+        let mut cache: BTreeMap<&str, BTreeMap<String, Vec<B256>>> = BTreeMap::new();
+        let mut checked = 0usize;
+
+        for (dir, contract, event, indexer_topic) in checks {
+            let artifact = cache
+                .entry(contract)
+                .or_insert_with(|| artifact_event_topics(dir, contract));
+            let candidates = artifact.get(*event).unwrap_or_else(|| {
+                panic!(
+                    "ABI drift: `{event}` is not declared by {contract} in the compiled \
+                     artifact, but services/explorer-indexer/src/abi.rs still filters \
+                     `eth_getLogs` on its topic-0. The event was renamed or removed in \
+                     Solidity — update abi.rs. Events present: {:?}",
+                    artifact.keys().collect::<Vec<_>>()
+                )
+            });
+            assert!(
+                candidates.contains(indexer_topic),
+                "ABI drift for {contract}.{event}: the indexer filters on topic-0 \
+                 {indexer_topic:?}, but the compiled Foundry artifact declares \
+                 {candidates:?}. The Solidity signature changed without a matching change \
+                 in services/explorer-indexer/src/abi.rs, so every {event} log would be \
+                 silently dropped. Update the `sol!` declaration, the `Topics::new()` \
+                 keccak literal, and the `abi_drift_gate` table to the new signature."
+            );
+            checked += 1;
+        }
+
+        // Guard against the table itself being emptied or shadowed by a refactor:
+        // a gate that checks nothing is indistinguishable from a passing gate.
+        assert_eq!(
+            checked,
+            checks.len(),
+            "not every entry in the artifact cross-check table was evaluated"
+        );
+        assert!(
+            checked >= 27,
+            "artifact cross-check covered only {checked} events — entries were removed \
+             from the table without removing the corresponding topic from `Topics`"
+        );
+    }
 
     /// Sanity-check: locally-computed topic hashes match what `sol!`
     /// derives. If a contract event signature drifts, this catches it.
@@ -699,100 +1035,107 @@ mod tests {
     /// This test is the automated ABI drift check required by issue #366.
     /// It catches any mismatch between:
     ///   1. The `sol!` event declarations in this file, and
-    ///   2. The canonical canonical signatures from the contract source.
+    ///   2. The signature strings hand-transcribed into the table below.
     ///
     /// If any field is added, removed, or renamed in `abi.rs` without a
-    /// matching change in the `SOL_SIGS` table below (or vice-versa), the
-    /// test fails — preventing silent event drops in the indexer.
+    /// matching change in the table below (or vice-versa), the test fails.
+    ///
+    /// **What it cannot catch (issue #1346).** Both sides of every comparison
+    /// here are hand-maintained copies living in this file; the test reads no
+    /// Solidity and no build artifact, so a signature change in the contracts
+    /// leaves it green. `event_topics_match_foundry_artifacts` above is the
+    /// half that reads the compiled `out/` artifacts and is therefore the gate
+    /// that actually fails on real Solidity drift. Keep both: this one localises
+    /// an internal inconsistency to a specific copy, that one establishes truth.
     ///
     /// Source references:
-    ///   IGateway.sol:74,85,100,119  VaultRegistry.sol:67,73
-    ///   RouterGovernance.sol:106,119,126,132  PortfolioRouter.sol:71
+    ///   IGateway.sol:97,108,123,142  VaultRegistry.sol:146,152
+    ///   RouterGovernance.sol:163,176,183,189  PortfolioRouter.sol:122
     #[test]
     fn abi_drift_gate() {
         use alloy_primitives::keccak256;
 
         // One entry per indexed event: (event_name, canonical_signature, sol_macro_hash).
         let checks: &[(&str, &[u8], B256)] = &[
-            // IGateway.sol:74
+            // IGateway.sol:97
             (
                 "AgentAuthorized",
                 b"AgentAuthorized(address,address,uint64,uint256,uint256,address)",
                 IGatewayEvents::AgentAuthorized::SIGNATURE_HASH,
             ),
-            // IGateway.sol:85
+            // IGateway.sol:108
             (
                 "AgentRevoked",
                 b"AgentRevoked(address,address)",
                 IGatewayEvents::AgentRevoked::SIGNATURE_HASH,
             ),
-            // IGateway.sol:100
+            // IGateway.sol:123
             (
                 "AgentDeposit",
                 b"AgentDeposit(bytes32,bytes32,address,address,uint256,uint256,uint64)",
                 IGatewayEvents::AgentDeposit::SIGNATURE_HASH,
             ),
-            // IGateway.sol:139
+            // IGateway.sol:162
             (
                 "AgentWithdrawal",
                 b"AgentWithdrawal(bytes32,bytes32,address,address,uint256,uint256,address,uint64)",
                 IGatewayEvents::AgentWithdrawal::SIGNATURE_HASH,
             ),
-            // IGateway.sol:119
+            // IGateway.sol:142
             (
                 "AgentDepositRouted",
                 b"AgentDepositRouted(bytes32,bytes32,address,address,address,uint256,uint256[],uint64)",
                 IGatewayEvents::AgentDepositRouted::SIGNATURE_HASH,
             ),
-            // VaultRegistry.sol:67
+            // VaultRegistry.sol:146
             (
                 "VaultRegistered",
                 b"VaultRegistered(address,string,address)",
                 IVaultRegistryEvents::VaultRegistered::SIGNATURE_HASH,
             ),
-            // VaultRegistry.sol:73 — VaultStatus enum ABI-encodes as uint8
+            // VaultRegistry.sol:152 — VaultStatus enum ABI-encodes as uint8
             (
                 "VaultStatusChanged",
                 b"VaultStatusChanged(address,uint8,uint256)",
                 IVaultRegistryEvents::VaultStatusChanged::SIGNATURE_HASH,
             ),
-            // RouterGovernance.sol:106
+            // RouterGovernance.sol:163
             (
                 "ProposalCreated",
                 b"ProposalCreated(uint256,address,address[],uint256[],uint64)",
                 IRouterGovernanceEvents::ProposalCreated::SIGNATURE_HASH,
             ),
-            // RouterGovernance.sol:119
+            // RouterGovernance.sol:176
             (
                 "VoteCast",
                 b"VoteCast(uint256,address,uint256,uint256)",
                 IRouterGovernanceEvents::VoteCast::SIGNATURE_HASH,
             ),
-            // RouterGovernance.sol:126
+            // RouterGovernance.sol:183
             (
                 "ProposalExecuted",
                 b"ProposalExecuted(uint256,address)",
                 IRouterGovernanceEvents::ProposalExecuted::SIGNATURE_HASH,
             ),
-            // RouterGovernance.sol:132
+            // RouterGovernance.sol:189
             (
                 "WeightsApplied",
                 b"WeightsApplied(uint256,address[],uint256[])",
                 IRouterGovernanceEvents::WeightsApplied::SIGNATURE_HASH,
             ),
-            // PortfolioRouter.sol:71
+            // PortfolioRouter.sol:122
             (
                 "RouterDeposit",
                 b"RouterDeposit(address,address,uint256,uint256,uint256)",
                 IPortfolioRouterEvents::RouterDeposit::SIGNATURE_HASH,
             ),
-            // PortfolioRouter.sol:114 — direct admin weight-set (demo-seed path)
+            // PortfolioRouter.sol:133 — direct admin weight-set (demo-seed path)
             (
                 "WeightsSet",
                 b"WeightsSet(address[],uint256[])",
                 IPortfolioRouterEvents::WeightsSet::SIGNATURE_HASH,
             ),
-            // PortfolioRouter.sol:120 — default (fallback) weight-set by ADMIN_ROLE
+            // PortfolioRouter.sol:139 — default (fallback) weight-set by ADMIN_ROLE
             (
                 "DefaultWeightsSet",
                 b"DefaultWeightsSet(address[],uint256[])",

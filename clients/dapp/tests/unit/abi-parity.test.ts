@@ -22,25 +22,35 @@
  * annotation with no bearing on whether a client can correctly encode a call
  * or decode its result.
  *
- * Coverage note: `BASKET_VAULT_SHORTLIST_ABI` is deliberately NOT included
- * below — `BASKET_VAULT_SHORTLIST_ABI` (AgentTokenVault/ProtocolAssetVault
- * `shortlist()`, via `BasketViews.sol`) has no canonical counterpart at
- * all: `.github/scripts/generate_abi_bindings.sh` never generates bindings
- * for those contracts, so there is nothing in `abi.generated.ts` to compare
- * it against.
+ * Coverage note: this test now has NO carve-outs. `BASKET_VAULT_SHORTLIST_ABI`
+ * was the last one — it had no canonical counterpart at all, because
+ * `.github/scripts/generate_abi_bindings.sh` generated bindings for neither
+ * basket vault. Issue #1346 extended the generator to emit
+ * `agentTokenVaultAbiGenerated`, so `shortlist()` is now compared against real
+ * Foundry output like every other binding. `AgentTokenVault` is the counterpart
+ * because it is the only contract that declares `shortlist()`;
+ * `ProtocolAssetVault` does not, which is its own defect (issue #1364).
  *
  * `registryAbi` (previously excluded here for its own real, pre-existing
  * `getVault` drift from `VaultRegistry.sol` — issue #1348) is fixed and
  * included below.
  */
 import { describe, it, expect } from "vitest";
-import { gatewayAbi, erc20Abi, vaultAbi, routerAbi, registryAbi } from "../../src/lib/abi";
+import {
+  gatewayAbi,
+  erc20Abi,
+  vaultAbi,
+  routerAbi,
+  registryAbi,
+  BASKET_VAULT_SHORTLIST_ABI,
+} from "../../src/lib/abi";
 import {
   gatewayAbiGenerated,
   erc20AbiGenerated,
   robotMoneyVaultAbiGenerated,
   routerAbiGenerated,
   registryAbiGenerated,
+  agentTokenVaultAbiGenerated,
 } from "../../src/lib/abi.generated";
 
 interface AbiParam {
@@ -92,6 +102,11 @@ const PAIRS: readonly AbiPair[] = [
   { label: "vaultAbi", handMaintained: vaultAbi, canonical: robotMoneyVaultAbiGenerated },
   { label: "routerAbi", handMaintained: routerAbi, canonical: routerAbiGenerated },
   { label: "registryAbi", handMaintained: registryAbi, canonical: registryAbiGenerated },
+  {
+    label: "BASKET_VAULT_SHORTLIST_ABI",
+    handMaintained: BASKET_VAULT_SHORTLIST_ABI,
+    canonical: agentTokenVaultAbiGenerated,
+  },
 ];
 
 describe("abi.ts <-> abi.generated.ts parity (issue #1281)", () => {
