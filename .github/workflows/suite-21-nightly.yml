@@ -119,6 +119,17 @@ jobs:
         env:
           RMPC_FORK_RPC_URL_RAW: ${{ vars.RMPC_FORK_RPC_URL }}
         run: scripts/devnet/check-fork-rpc-configured.sh "$RMPC_FORK_RPC_URL_RAW"
+      - name: Fork pin staleness gate (issue #1386)
+        # The pull-request path only WARNS about a stale pin (see
+        # scripts/devnet/check-fork-manifest.sh) so a maintenance signal cannot
+        # red the merge queue. Nightly is where failing is affordable, so this
+        # is the hard gate: the devnet's chain clock is wall-clock now while
+        # the forked Aave/Compound/Morpho state is frozen at the pin, and the
+        # simulated accrual interval grows every day the fixture is not
+        # refreshed. 30 days is one calendar month past the fixture's own
+        # historical 1-4 week refresh cadence.
+        run: scripts/devnet/check-fork-pin-age.sh --max-age-days 30
+
       - name: Regression tests for provider/drift classification (issue #1235)
         # .github/scripts/tests/test_live_base_fork_drift.sh existed but no
         # workflow invoked it (shape 6, issue #1235) -- it could neither pass
