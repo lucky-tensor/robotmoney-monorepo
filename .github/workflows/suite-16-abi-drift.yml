@@ -97,6 +97,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# CI taxonomy (issue #1105): `feature-correctness`, not `code-hygiene`. The
+# regenerate-and-diff step alone would be hygiene, but this job also asserts
+# behaviour — the inventory guard's own self-test, and a scoped `--lib` unit test
+# that re-derives 27 indexer topic-0 hashes from the Foundry artifacts — and
+# `code-hygiene` is defined as carrying no behavioural assertions. It stays a
+# draft-stage check (`feature-correctness` runs at pr_draft and pr_r4r): drift is
+# cheapest to catch on the push that introduces it, and the whole job is minutes.
+# Docs-only PRs never reach it — the `pull_request` trigger below is a `paths:`
+# allowlist of contract, binding and script files, so `**.md` / `**.txt` alone
+# does not match it.
+#
+# `ci-taxonomy-lint.sh` reports one accepted warning here, `sweep-missing-nightly`
+# (no `schedule:` trigger). That is the repo-wide convention, not an oversight:
+# every correctness suite carries it — suites 01-02, 05, 07, 08, 14, 17, 22 and 23
+# all do. Adding a nightly sweep to this one file alone would make it the sole
+# exception; doing it consistently is a repo-wide taxonomy pass, not this gate's
+# job. The drift this suite catches is deterministic and change-triggered, so a
+# nightly re-run would re-derive the same artifacts from the same sources.
+env:
+  CI_CLASS: feature-correctness
+
 jobs:
   abi-drift:
     name: abi-drift-gate
