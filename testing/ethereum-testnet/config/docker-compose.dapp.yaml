@@ -69,16 +69,20 @@ services:
       timeout: 5s
       retries: 15
 
-  # indexer + explorer-api run the SAME image (built once from the shared Rust
-  # build container, docker/rust-services.Dockerfile) with different entrypoints,
-  # so the workspace compiles once instead of once per service. This service owns
-  # the build; explorer-api reuses the resulting robotmoney-rust-services:devnet tag.
+  # Issue #1354: indexer and explorer-api ship as SEPARATE images so either can
+  # be restarted or redeployed without touching the other's process. They are
+  # two named targets of one multi-stage build (docker/rust-services.Dockerfile),
+  # not two Dockerfiles: both targets consume the same `builder` stage from the
+  # same build context, so BuildKit compiles the shared workspace closure once
+  # and serves the second target's builder layers from cache. Each image bakes
+  # its own ENTRYPOINT — no `entrypoint:` override here selecting a binary out
+  # of a shared image.
   explorer-indexer:
-    image: robotmoney-rust-services:devnet
+    image: robotmoney-explorer-indexer:devnet
     build:
       context: ../../..
       dockerfile: docker/rust-services.Dockerfile
-    entrypoint: ["/usr/local/bin/indexer"]
+      target: indexer
     container_name: dapp-explorer-indexer
     labels: *testnet-labels
     restart: unless-stopped
@@ -131,18 +135,29 @@ services:
       # config/feature-flags.json id=2; services/explorer-indexer/src/feature_flags.rs.
       FEATURE_FLAGS: ${FEATURE_FLAGS:-4}
 
-  # Reuses the robotmoney-rust-services:devnet image built by explorer-indexer
-  # (no build: of its own) and selects the explorer-api binary via entrypoint.
-  # depends_on explorer-indexer so the shared image is built before this starts.
+  # Issue #1354: builds its OWN image from the `explorer-api` target of the
+  # shared multi-stage build (see explorer-indexer above). The `builder` stage
+  # is identical for both targets, so this build is a cache hit on the cargo
+  # compile rather than a second one.
   explorer-api:
-    image: robotmoney-rust-services:devnet
-    entrypoint: ["/usr/local/bin/explorer-api"]
+    image: robotmoney-explorer-api:devnet
+    build:
+      context: ../../..
+      dockerfile: docker/rust-services.Dockerfile
+      target: explorer-api
     container_name: dapp-explorer-api
     labels: *testnet-labels
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      # Ordering preserved across the issue #1354 image split. The reason is
+      # schema, not packaging: the indexer owns `db.migrate()`
+      # (services/explorer-indexer/src/main.rs) and explorer-api runs no
+      # migrations of its own, so the API must not start before the migrating
+      # process has. (It used to ALSO serialise the shared image build; that
+      # half of the rationale is gone now that each service builds its own
+      # target, but the migration ordering still stands.)
       explorer-indexer:
         condition: service_started
     environment:
