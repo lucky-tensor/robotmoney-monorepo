@@ -46,6 +46,19 @@ bunx playwright install --with-deps chromium && bun run test:e2e
 
 ## Env
 
+Build-time `VITE_*` variables are the base layer. At startup the dapp fetches
+`/config.json` from its own origin and overlays the deployment-shaped values
+(contract addresses, `VITE_ENV_CLASS`, `VITE_DEVNET_RPC_URL`,
+`VITE_EXPLORER_API_URL`) on top, so one image serves several environments
+without a rebuild — see `src/lib/runtimeConfig.ts` and `src/bootstrap.tsx`.
+A 404 for that document means "no runtime config deployed" and the build-time
+values stand; any other failure renders a visible error instead of a
+half-configured app.
+
+`VITE_FAUCET_HARNESS_PRIVATE_KEY` and `VITE_HISTORY_PANE` are deliberately
+build-time-only and are ignored if present in `/config.json`.
+
+
 | Var                               | Default                 | Purpose                                                                                       |
 | --------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------- |
 | `VITE_GATEWAY_ADDRESS`            | `0x000…0`               | Gateway contract address                                                                      |

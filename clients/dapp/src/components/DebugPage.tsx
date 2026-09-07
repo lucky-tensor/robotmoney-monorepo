@@ -11,7 +11,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Address } from "viem";
 import { useAccount, useBlockNumber, useChainId, useDisconnect, useReadContract } from "wagmi";
 import { gatewayAbi } from "../lib/abi";
-import { targetChainId } from "../lib/wagmi";
+import { resolveTargetChainId } from "../lib/wagmi";
+import { useRuntimeConfig } from "../lib/RuntimeConfigContext";
 import { getInjectedProvider, syncDevnetChain } from "../lib/syncDevnetChain";
 import type { VerificationState } from "../lib/useGatewayVerifier";
 import { useAgentRegistration } from "../lib/useVaultRegistration";
@@ -36,6 +37,10 @@ export function DebugPage(props: DebugPageProps) {
   const chainId = useChainId();
   const registrationStatus = useAgentRegistration(props.vaultAddress);
   const [networkSyncError, setNetworkSyncError] = useState<string | undefined>(undefined);
+  // Issue #1356: expected chain and devnet RPC URL come from the fetched
+  // runtime config, not a build-time constant.
+  const runtimeConfig = useRuntimeConfig();
+  const targetChainId = resolveTargetChainId(runtimeConfig);
   const [captureEntries, setCaptureEntries] = useState<readonly CaptureEntry[]>(() =>
     getCapturedEntries(),
   );
@@ -82,7 +87,7 @@ export function DebugPage(props: DebugPageProps) {
       setNetworkSyncError("No injected wallet provider (window.ethereum is undefined).");
       return;
     }
-    void syncDevnetChain(provider).then(setNetworkSyncError);
+    void syncDevnetChain(provider, runtimeConfig).then(setNetworkSyncError);
   };
 
   return (

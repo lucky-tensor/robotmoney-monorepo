@@ -21,7 +21,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Hex } from "viem";
 import { computeVerificationState, ZERO_ADDRESS } from "./gatewayVerifier";
 import type { VerificationState } from "./gatewayVerifier";
-import { targetChainId } from "./wagmi";
+import { resolveTargetChainId } from "./wagmi";
+import { useRuntimeConfig } from "./RuntimeConfigContext";
 
 export { type VerificationState };
 
@@ -48,6 +49,10 @@ export function useGatewayVerifier(
   const [state, setState] = useState<VerificationState>({ status: "idle" });
   const { isConnected } = useAccount();
   const chainId = useChainId();
+  // Issue #1356: the expected chain comes from the runtime config rather than
+  // a build-time constant. Absent a provider the config is empty, which means
+  // "no devnet configured" — the same as a bundle built without the URL.
+  const targetChainId = resolveTargetChainId(useRuntimeConfig());
   // Bumping this triggers the effect to re-run for a manual retry.
   const [refreshTick, setRefreshTick] = useState(0);
   const cancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
@@ -132,7 +137,7 @@ export function useGatewayVerifier(
     return () => {
       token.cancelled = true;
     };
-  }, [gatewayAddress, expectedCodeHash, isConnected, chainId, refreshTick]);
+  }, [gatewayAddress, expectedCodeHash, isConnected, chainId, targetChainId, refreshTick]);
 
   return { state, refresh };
 }

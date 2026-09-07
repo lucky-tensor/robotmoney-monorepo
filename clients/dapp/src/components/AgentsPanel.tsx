@@ -27,6 +27,7 @@ import {
 import type { VerificationState } from "../lib/useGatewayVerifier";
 import type { PreviewContext } from "../lib/preview";
 import { getInjectedProvider, syncDevnetChain } from "../lib/syncDevnetChain";
+import { useRuntimeConfig } from "../lib/RuntimeConfigContext";
 
 type Props = Readonly<{
   gatewayAddress: Address;
@@ -53,6 +54,9 @@ export function AgentsPanel(props: Props) {
   const { connect, connectors } = useConnect();
   const status = useAgentRegistration(props.vaultAddress);
   const [networkSyncError, setNetworkSyncError] = useState<string | undefined>(undefined);
+  // Issue #1356: the devnet RPC URL wallet_addEthereumChain suggests comes
+  // from the fetched runtime config rather than a build-time constant.
+  const runtimeConfig = useRuntimeConfig();
 
   // localStorage-backed dismiss flag, keyed per wallet address.
   // Initialised synchronously from localStorage so there is no wizard flash on
@@ -98,7 +102,7 @@ export function AgentsPanel(props: Props) {
             setNetworkSyncError("No injected wallet provider (window.ethereum is undefined).");
             return;
           }
-          void syncDevnetChain(provider).then(setNetworkSyncError);
+          void syncDevnetChain(provider, runtimeConfig).then(setNetworkSyncError);
         },
       },
     );
