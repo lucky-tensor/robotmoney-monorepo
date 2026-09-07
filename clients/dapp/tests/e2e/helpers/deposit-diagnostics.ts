@@ -196,6 +196,11 @@ export interface RevertClassification {
  *                           in a callee that propagated nothing)
  *   - a 4-byte selector  -> a custom error, resolved to a name here
  *
+ * The first rule is sound for a TOP-LEVEL out-of-gas only. A nested one is
+ * routinely re-wrapped as `FailedInnerCall()` and arrives here looking like a
+ * custom error, so `diagnoseRevertedDeposit`'s verdict weighs the call trace
+ * above this classification rather than treating it as the last word.
+ *
  * Pure and node-free so it is unit-testable without a chain.
  *
  * @param data       `data` field of the JSON-RPC error, if the node supplied one.
