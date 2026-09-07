@@ -216,9 +216,10 @@ bash scripts/devnet/check-fork-manifest.sh
 
 ## 3. Full-stack staging (devnet + dapp + indexer)
 
-The local devnet (§1) plus Postgres, explorer-indexer, explorer-api, and
-the dapp all running together in Docker Compose. Used to validate the
-complete Robot Money service graph end-to-end.
+The local devnet (§1) plus Postgres, a one-shot explorer-migrate schema
+step, explorer-indexer, explorer-api, and the dapp all running together in
+Docker Compose. Used to validate the complete Robot Money service graph
+end-to-end.
 
 ### Services
 
@@ -227,7 +228,8 @@ Everything in §1 plus:
 | Service | Role |
 |---------|------|
 | `postgres` | Explorer persistence |
-| `explorer-indexer` | Chain event indexer |
+| `explorer-migrate` | One-shot `indexer --migrate-only`: applies the explorer schema, then exits. `explorer-indexer` and `explorer-api` both wait on it with `service_completed_successfully`, so a failing migration stops the stack instead of leaving either service running against a half-migrated database (issue #1359) |
+| `explorer-indexer` | Chain event indexer. Does **not** migrate on boot |
 | `explorer-api` | REST API serving indexed data |
 | `dapp` | Built Vite bundle served by nginx |
 

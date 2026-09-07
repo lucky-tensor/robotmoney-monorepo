@@ -3,7 +3,8 @@
 # Canonical: Plan tracking issue #109 §10.5 — Phase 4.5.
 # Used by: testing/smoke-test (--full-stack flag, issue #228).
 #
-# Brings up Postgres, explorer-indexer, explorer-api, and the dapp
+# Brings up Postgres, a one-shot explorer-migrate schema migration,
+# explorer-indexer, explorer-api, and the dapp
 # against an already-running Geth+Lighthouse chain. The smoke-test
 # binary starts the chain via docker-compose.yaml first, deploys
 # contracts, then starts this stack passing deployed addresses as
@@ -69,6 +70,43 @@ services:
       timeout: 5s
       retries: 15
 
+  # Issue #1359: the explorer schema is migrated by its OWN one-shot container,
+  # no longer as a side effect of the indexer booting. `indexer --migrate-only`
+  # runs the embedded migrator against DATABASE_URL and exits — 0 on success,
+  # non-zero on failure — requiring none of the chain-watching arguments.
+  #
+  # This service is what makes the ordering real. Before, `explorer-api` waited
+  # on `explorer-indexer: service_started`, which only means the indexer's
+  # container was created — not that its migration had finished; the API could
+  # (and did, racily) query a schema that did not exist yet. Both consumers now
+  # wait on `service_completed_successfully` here, so neither is created until
+  # the migrator has exited 0. A failing migration therefore stops the stack
+  # with no indexer and no API running, instead of leaving a container
+  # crash-looping against a half-migrated database.
+  #
+  # Reuses the `indexer` target of the shared build (see explorer-indexer
+  # below) rather than adding a third image: same context, same dockerfile,
+  # same target, so BuildKit resolves it to the identical cache key and the
+  # cargo compile is not repeated.
+  explorer-migrate:
+    image: robotmoney-explorer-indexer:devnet
+    build:
+      context: ../../..
+      dockerfile: docker/rust-services.Dockerfile
+      target: indexer
+    container_name: dapp-explorer-migrate
+    labels: *testnet-labels
+    # One-shot. `unless-stopped` (used by every long-running service here)
+    # would restart the migrator forever once it succeeded and exited.
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The image's ENTRYPOINT is /usr/local/bin/indexer; this supplies its args.
+    command: ["--migrate-only"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-robotmoney}:${POSTGRES_PASSWORD:-robotmoney}@postgres:5432/${POSTGRES_DB:-explorer}
+
   # Issue #1354: indexer and explorer-api ship as SEPARATE images so either can
   # be restarted or redeployed without touching the other's process. They are
   # two named targets of one multi-stage build (docker/rust-services.Dockerfile),
@@ -89,6 +127,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Issue #1359: the indexer no longer migrates on boot, so it must not
+      # start until the migrator has exited 0 — otherwise its first tick writes
+      # against a schema that does not exist.
+      explorer-migrate:
+        condition: service_completed_successfully
       # Issue #1294: the indexer verifies each receipt's payload_uri digest on
       # its FIRST scan of the ReceiptRecorded events (which are already on
       # chain before this compose stack boots). A fetch failure at that moment
@@ -151,15 +194,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # Ordering preserved across the issue #1354 image split. The reason is
-      # schema, not packaging: the indexer owns `db.migrate()`
-      # (services/explorer-indexer/src/main.rs) and explorer-api runs no
-      # migrations of its own, so the API must not start before the migrating
-      # process has. (It used to ALSO serialise the shared image build; that
-      # half of the rationale is gone now that each service builds its own
-      # target, but the migration ordering still stands.)
-      explorer-indexer:
-        condition: service_started
+      # The reason for this edge has always been schema, not packaging:
+      # explorer-api runs no migrations of its own and its /health probe reads
+      # `indexer_runs`, so it must not start before the schema exists. Issue
+      # #1359 makes that edge point at the process that actually migrates.
+      # Until then it pointed at `explorer-indexer: service_started`, which was
+      # never the guarantee it looked like — `service_started` means the
+      # container was created, not that its in-process `db.migrate()` had
+      # returned. `service_completed_successfully` on the dedicated migrator is
+      # a real barrier.
+      explorer-migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-robotmoney}:${POSTGRES_PASSWORD:-robotmoney}@postgres:5432/${POSTGRES_DB:-explorer}
       EXPLORER_API_CHAIN_ID: ${EXPLORER_API_CHAIN_ID:-918453}

@@ -2,6 +2,14 @@
 //! `indexer` — long-running poll loop. Wraps `run_once` in a tokio
 //! interval; press Ctrl-C to stop. For one-shot bounded ingestion
 //! (e.g. CI), use `--once` and `--end-block`.
+//!
+//! Schema migration is a SEPARATE invocation, not a side effect of booting
+//! the poll loop (issue #1359). `indexer --migrate-only` connects to
+//! `DATABASE_URL`, runs the embedded migrator, and exits — 0 on success,
+//! non-zero on failure — without requiring any of the chain-watching
+//! arguments. The normal boot path never migrates, so a broken migration
+//! fails a deployment's explicit migrate step instead of crash-looping a
+//! long-running container against a half-migrated database.
 
 use alloy_primitives::Address;
 use clap::Parser;
@@ -20,9 +28,20 @@ struct Cli {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
+    /// Run the embedded schema migrations against `--database-url` and
+    /// exit. Exits 0 when every migration applied, non-zero otherwise.
+    /// None of the chain-watching arguments are required in this mode.
+    #[arg(long, default_value_t = false)]
+    migrate_only: bool,
+
     /// JSON-RPC URL for the chain to index.
-    #[arg(long, env = "INDEXER_RPC_URL")]
-    rpc_url: String,
+    /// Required unless `--migrate-only`.
+    #[arg(
+        long,
+        env = "INDEXER_RPC_URL",
+        required_unless_present = "migrate_only"
+    )]
+    rpc_url: Option<String>,
 
     /// Chain id (8453 for Base mainnet).
     #[arg(long, env = "INDEXER_CHAIN_ID", default_value_t = 8453)]
@@ -36,13 +55,17 @@ struct Cli {
     #[arg(long, env = "INDEXER_RPC_LABEL", default_value = "unknown")]
     rpc_label: String,
 
-    /// Watched gateway address.
-    #[arg(long, env = "INDEXER_GATEWAY")]
-    gateway: String,
+    /// Watched gateway address. Required unless `--migrate-only`.
+    #[arg(
+        long,
+        env = "INDEXER_GATEWAY",
+        required_unless_present = "migrate_only"
+    )]
+    gateway: Option<String>,
 
-    /// Watched vault address.
-    #[arg(long, env = "INDEXER_VAULT")]
-    vault: String,
+    /// Watched vault address. Required unless `--migrate-only`.
+    #[arg(long, env = "INDEXER_VAULT", required_unless_present = "migrate_only")]
+    vault: Option<String>,
 
     /// Optional VaultRegistry contract address.  When set, the indexer
     /// ingests VaultRegistered and VaultStatusChanged events from this
@@ -116,8 +139,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let db = Db::connect(&cli.database_url).await?;
-    db.migrate().await?;
-    let rpc = JsonRpc::new(&cli.rpc_url);
+
+    // Issue #1359: migration is its own invocation. `--migrate-only` runs the
+    // embedded migrator and returns; any migration error propagates out of
+    // `main` as a non-zero exit so the deploy's migrate step fails loudly.
+    if cli.migrate_only {
+        db.migrate().await?;
+        info!("migrations applied; exiting (--migrate-only)");
+        return Ok(());
+    }
+
+    // The normal boot path deliberately does NOT migrate — the schema must
+    // already have been migrated by a prior `--migrate-only` run.
+    //
+    // clap enforces these three via `required_unless_present = "migrate_only"`,
+    // so the `ok_or` arms are unreachable on the normal path; they exist so a
+    // future CLI edit that drops the constraint fails with a message instead
+    // of a panic.
+    let rpc_url = cli
+        .rpc_url
+        .ok_or("--rpc-url (INDEXER_RPC_URL) is required unless --migrate-only")?;
+    let gateway = cli
+        .gateway
+        .ok_or("--gateway (INDEXER_GATEWAY) is required unless --migrate-only")?;
+    let vault = cli
+        .vault
+        .ok_or("--vault (INDEXER_VAULT) is required unless --migrate-only")?;
+
+    let rpc = JsonRpc::new(&rpc_url);
 
     let registry = cli
         .registry
@@ -163,8 +212,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chain_id: cli.chain_id,
         chain_name: cli.chain_name,
         rpc_label: cli.rpc_label,
-        gateway: Address::from_str(cli.gateway.trim_start_matches("0x"))?,
-        vault: Address::from_str(cli.vault.trim_start_matches("0x"))?,
+        gateway: Address::from_str(gateway.trim_start_matches("0x"))?,
+        vault: Address::from_str(vault.trim_start_matches("0x"))?,
         registry,
         router_governance,
         portfolio_router,

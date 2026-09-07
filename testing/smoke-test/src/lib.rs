@@ -342,6 +342,33 @@ struct ComposeContainerStatus {
     error: Option<String>,
 }
 
+/// Compose services that are one-shot BY DESIGN: they run to completion and
+/// exit 0, so the health probe must not read their `exited` state as a stack
+/// failure.
+///
+/// - `setup` — the chain stack's genesis/keystore bootstrap
+///   (`testing/ethereum-testnet/config/docker-compose.yaml`).
+/// - `explorer-migrate` — the dapp stack's schema migration step
+///   (`docker-compose.dapp.yaml`, issue #1359). The explorer schema used to be
+///   migrated as a side effect of the indexer's boot; it is now its own
+///   container that `explorer-indexer` and `explorer-api` wait on with
+///   `service_completed_successfully`.
+///
+/// Only a ZERO exit is exempted (see [`is_completed_one_shot`]). A failing
+/// migration still trips the probe — that is the point of making migration an
+/// explicit step.
+const ONE_SHOT_COMPOSE_SERVICES: [&str; 2] = ["setup", "explorer-migrate"];
+
+/// True when this container is a [`ONE_SHOT_COMPOSE_SERVICES`] member that has
+/// finished successfully, and so must be excluded from the unhealthy set.
+fn is_completed_one_shot(status: &ComposeContainerStatus) -> bool {
+    status.exit_code == Some(0)
+        && status
+            .service
+            .as_deref()
+            .is_some_and(|service| ONE_SHOT_COMPOSE_SERVICES.contains(&service))
+}
+
 impl ComposeContainerStatus {
     fn describe(&self) -> String {
         let service = self.service.as_deref().unwrap_or("unknown");
@@ -3905,10 +3932,7 @@ fn compose_health_probe<'a>(
         }
         let unhealthy = statuses
             .into_iter()
-            .filter(|status| {
-                !(status.service.as_deref() == Some("setup") && status.exit_code == Some(0))
-                    && status.is_unhealthy()
-            })
+            .filter(|status| !is_completed_one_shot(status) && status.is_unhealthy())
             .collect::<Vec<_>>();
         if unhealthy.is_empty() {
             return Ok(());
@@ -4853,6 +4877,58 @@ fn wait_for_http_ok_with_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exited_status(service: &str, exit_code: i64) -> ComposeContainerStatus {
+        ComposeContainerStatus {
+            id: "deadbeef".to_string(),
+            name: format!("dapp-{service}"),
+            service: Some(service.to_string()),
+            state: "exited".to_string(),
+            health: None,
+            exit_code: Some(exit_code),
+            oom_killed: false,
+            error: None,
+        }
+    }
+
+    /// Issue #1359: `explorer-migrate` runs the explorer schema migration and
+    /// exits. `is_unhealthy` classifies ANY exited container as unhealthy, so
+    /// without the one-shot exemption the dapp stack's health probe would abort
+    /// every full-stack boot the moment the migration finished successfully.
+    #[test]
+    fn completed_migrate_one_shot_is_not_treated_as_unhealthy() {
+        let migrate = exited_status("explorer-migrate", 0);
+        assert!(
+            migrate.is_unhealthy(),
+            "an exited container is unhealthy in the general case"
+        );
+        assert!(
+            is_completed_one_shot(&migrate),
+            "explorer-migrate exiting 0 must be exempted from the unhealthy set"
+        );
+    }
+
+    /// The exemption is strictly for a SUCCESSFUL run: a failed migration is
+    /// exactly the condition the explicit migrate step exists to surface, so it
+    /// must still fail the probe.
+    #[test]
+    fn failed_migrate_one_shot_is_still_unhealthy() {
+        let migrate = exited_status("explorer-migrate", 1);
+        assert!(
+            !is_completed_one_shot(&migrate),
+            "a non-zero migrate exit must NOT be exempted"
+        );
+        assert!(migrate.is_unhealthy());
+    }
+
+    /// A long-running service that exits 0 is still a stack failure — the
+    /// exemption is keyed on the service name, not on the exit code alone.
+    #[test]
+    fn long_running_service_exiting_zero_is_still_unhealthy() {
+        let indexer = exited_status("explorer-indexer", 0);
+        assert!(!is_completed_one_shot(&indexer));
+        assert!(indexer.is_unhealthy());
+    }
 
     #[test]
     fn compose_collision_guard_filters_running_containers() {
