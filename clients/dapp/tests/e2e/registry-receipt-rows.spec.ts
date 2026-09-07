@@ -51,6 +51,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadEndpoints, type DevnetEndpoints } from "./helpers/devnet";
+import { diagnoseRevertedDeposit } from "./helpers/deposit-diagnostics";
 import { openDapp } from "./helpers/wallet";
 import { erc20Abi, vaultAbi } from "../../src/lib/abi";
 
@@ -116,6 +117,17 @@ async function waitUntil<T>(predicate: () => Promise<T | null>, description: str
  * (paused vault, deposit cap, insufficient USDC) passes silently and only
  * surfaces downstream as a zero share balance — which reads as "the registry
  * decode broke" and points at entirely the wrong defect (issue #1366).
+ *
+ * A reverted DEPOSIT is additionally diagnosed before the assertion fires
+ * (issue #1380). The receipt alone carries only `status: 0`, and this deposit
+ * has an intermittent, still-unexplained revert on `dev` whose gas profile
+ * puts it deep inside `_routeDeposit`, past every guard. `diagnoseRevertedDeposit`
+ * replays the transaction with `eth_call` pinned to the failing block to
+ * recover the revert payload — empty data means out of gas, a 4-byte selector
+ * is resolved to a custom-error name — and dumps the vault's per-adapter
+ * routing state at that same block. It runs ONLY on the failure path, and is
+ * total (every section degrades to an "unavailable" line), so it cannot
+ * itself redden a passing run.
  */
 async function depositAsAdmin(endpoints: DevnetEndpoints, amount: bigint): Promise<void> {
   const account = privateKeyToAccount(endpoints.admin_private_key as Hex);
@@ -155,12 +167,29 @@ async function depositAsAdmin(endpoints: DevnetEndpoints, amount: bigint): Promi
     hash: depositTx,
     timeout: 60_000,
   });
+  // Diagnose BEFORE asserting, and only when the deposit actually reverted.
+  // Guarding on `status` (rather than adding unconditional reads) is what keeps
+  // the instrumentation from being able to fail a healthy run — the harm
+  // pattern of issues #1366 / #1374. `diagnoseRevertedDeposit` never throws.
+  let diagnostics = "";
+  if (depositReceipt.status !== "success") {
+    diagnostics = await diagnoseRevertedDeposit({
+      rpcUrl: endpoints.rpc_url,
+      vault: endpoints.vault_addr,
+      txHash: depositTx,
+      blockNumber: depositReceipt.blockNumber,
+      gasUsed: depositReceipt.gasUsed,
+    });
+    // Print as well as attach: Playwright truncates long assertion messages,
+    // and the job log is the artifact this issue exists to make sufficient.
+    console.log(diagnostics);
+  }
   expect(
     depositReceipt.status,
     `vault.deposit(${amount}, ${account.address}) on ${endpoints.vault_addr} REVERTED ` +
-      `(tx=${depositTx}, block=${depositReceipt.blockNumber}) — likely a paused vault, a deposit ` +
-      `cap, or insufficient admin USDC. No shares were minted, so this is a deposit failure, ` +
-      `not a registry-decode failure`,
+      `(tx=${depositTx}, block=${depositReceipt.blockNumber}). No shares were minted, so this ` +
+      `is a deposit failure, not a registry-decode failure. The decoded cause follows — do not ` +
+      `guess at it (issue #1380):\n${diagnostics}`,
   ).toBe("success");
 }
 
