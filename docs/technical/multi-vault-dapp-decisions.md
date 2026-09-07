@@ -74,6 +74,13 @@ result as a single `vault: Address` scalar to `StatusHeader` and `AgentsPanel`.
 It also reads `VITE_GATEWAY_ADDRESS` and `VITE_GATEWAY_EXPECTED_CODE_HASH` as
 scalars. There is no concept of a vault list in the entry point.
 
+> **Update (issue #1356).** These reads no longer happen in `main.tsx` and no
+> longer come from `import.meta.env`. The entry point is now a thin wrapper
+> around `src/bootstrap.tsx`, which fetches `/config.json` at startup and
+> derives the same scalars from the resulting runtime config
+> (`deriveDappConfig`). The audit below still describes the shape of the
+> problem accurately — only the source of the values changed.
+
 **Hot-file edit required.** `main.tsx` must be changed to:
 
 - Remove the `VITE_VAULT_ADDRESS` scalar read.
