@@ -9,8 +9,11 @@
 //!
 //! - `VaultRegistry.listVaults()` → `address[]` of all registered vaults
 //!   (active, paused, and retired).
-//! - For each vault address: `VaultRegistry.getVault(address)` → `VaultRecord`
-//!   containing registry metadata.
+//! - For each vault address: `VaultRegistry.getVault(address)` → **two**
+//!   top-level outputs, `(VaultMetadata metadata, VaultStatus status)`, where
+//!   `VaultMetadata` is `{ name, asset, registeredAt }`. Two outputs decode as
+//!   a positional tuple, not as a single struct — see issue #1362 (the rmpc
+//!   half of the drift issue #1348 fixed on the dapp side).
 //! - For each vault: `vault.totalAssets()` — live TVL from chain.
 //!
 //! Output is the §9 envelope from `crate::read_output`. An empty registry
@@ -40,24 +43,32 @@ const EXIT_OK: i32 = 0;
 const EXIT_STARTUP_FAIL: i32 = 3;
 
 /// One entry in the `vaults` array. Contains registry metadata plus live TVL.
+///
+/// The registry fields are exactly what `VaultRegistry.getVault` returns
+/// today: `VaultMetadata { name, asset, registeredAt }` plus `status`.
+/// `risk_label`, `mandate`, `deposit_cap`, `exit_fee_bps` and
+/// `receipt_token_address` were an aspirational read shape from
+/// `docs/technical/vault-registry-decisions.md` §3.4 that the shipped contract
+/// (#329) never implemented, so rmpc could never have populated them from a
+/// real chain — it could not even decode the response. Dropped here for the
+/// same reasons issue #1348 dropped them from the dapp's `VaultRecord`:
+/// `receipt_token_address` always equals the vault address (every vault is its
+/// own ERC-4626 share token), and `deposit_cap`/`exit_fee_bps` are live reads
+/// on the vault contract, not registry state.
 #[derive(Debug, Default, Serialize)]
 pub struct VaultEntry {
     /// Vault contract address (lowercase 0x-hex).
     pub address: String,
     /// Human-readable label from the registry.
     pub name: String,
-    /// Risk category (e.g. `"stable-yield"`).
-    pub risk_label: String,
+    /// `VaultMetadata.asset` — the ERC-20 the vault denominates in.
+    pub asset: String,
     /// Operational status: `"active"`, `"paused"`, or `"retired"`.
     pub status: String,
+    /// `VaultMetadata.registeredAt` — block timestamp of `registerVault`.
+    pub registered_at: u64,
     /// Live `vault.totalAssets()` — decimal string.
     pub total_assets: DecimalU256,
-    /// Maximum total-assets cap; `"0"` means no cap.
-    pub deposit_cap: DecimalU256,
-    /// Exit fee in basis points.
-    pub exit_fee_bps: u16,
-    /// Receipt token address (== vault address for ERC-4626).
-    pub receipt_token_address: String,
 }
 
 /// `data` payload for `rmpc get-vaults`. Contains one `VaultEntry` per
@@ -156,7 +167,7 @@ async fn read_vaults(
     for (i, vault_addr) in vault_addrs.iter().enumerate() {
         let prefix = format!("vaults[{i}]");
 
-        // Fetch VaultRecord from registry.
+        // Fetch the registry record (metadata + status) for this vault.
         let record = match call_get_vault(rpc, registry, *vault_addr, &block_tag).await {
             Ok(r) => Some(r),
             Err(e) => {
@@ -177,13 +188,11 @@ async fn read_vaults(
         let entry = if let Some(rec) = record {
             VaultEntry {
                 address: format!("{vault_addr:#x}"),
-                name: rec.name,
-                risk_label: rec.riskLabel,
+                name: rec.metadata.name,
+                asset: format!("{:#x}", rec.metadata.asset),
                 status: vault_status_to_str(rec.status).to_string(),
+                registered_at: rec.metadata.registeredAt.saturating_to::<u64>(),
                 total_assets: DecimalU256(total_assets),
-                deposit_cap: DecimalU256(rec.depositCap),
-                exit_fee_bps: rec.exitFeeBps,
-                receipt_token_address: format!("{:#x}", rec.receiptToken),
             }
         } else {
             VaultEntry {
@@ -230,16 +239,21 @@ async fn call_list_vaults(
     let r = VaultRegistry::listVaultsCall::abi_decode_returns(&out, true).map_err(|e| {
         crate::errors::RmpcError::ErrRpcDecode(format!("listVaults abi decode: {e}"))
     })?;
-    Ok(r._0)
+    Ok(r.addresses)
 }
 
-/// Call `VaultRegistry.getVault(address)` and return the decoded `VaultRecord`.
+/// Call `VaultRegistry.getVault(address)` and return the decoded return value.
+///
+/// `getVault` has two top-level outputs — `(VaultMetadata metadata, uint8
+/// status)` — so the decoded value is a positional tuple, surfaced by
+/// `alloy` as a `getVaultReturn { metadata, status }`. It is NOT one merged
+/// struct; decoding it as one is the drift issue #1362 fixed.
 async fn call_get_vault(
     rpc: &FailoverRpcClient,
     registry: Address,
     vault: Address,
     block_tag: &str,
-) -> crate::errors::Result<VaultRegistry::VaultRecord> {
+) -> crate::errors::Result<VaultRegistry::getVaultReturn> {
     let data = VaultRegistry::getVaultCall { vault }.abi_encode();
     let out = rpc
         .eth_call(
@@ -253,7 +267,7 @@ async fn call_get_vault(
         .await?;
     let r = VaultRegistry::getVaultCall::abi_decode_returns(&out, true)
         .map_err(|e| crate::errors::RmpcError::ErrRpcDecode(format!("getVault abi decode: {e}")))?;
-    Ok(r._0)
+    Ok(r)
 }
 
 /// Call `vault.totalAssets()` and return the decoded `U256`.
@@ -318,7 +332,6 @@ mod tests {
             address: "0x0000000000000000000000000000000000000001".to_string(),
             name: "Test Vault".to_string(),
             total_assets: DecimalU256(U256::from(1_000_000u64)),
-            deposit_cap: DecimalU256(U256::ZERO),
             ..Default::default()
         };
         let v: Value = serde_json::to_value(&entry).unwrap();
@@ -327,7 +340,6 @@ mod tests {
             "total_assets must be a JSON string"
         );
         assert_eq!(v["total_assets"].as_str().unwrap(), "1000000");
-        assert_eq!(v["deposit_cap"].as_str().unwrap(), "0");
     }
 
     /// When registry_address is absent from config, run() must return

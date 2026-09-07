@@ -71,32 +71,38 @@ keystore_path           = "{}"
     }
 }
 
-/// ABI-encode a `VaultRecord` tuple for mocking `getVault` returns.
-#[allow(clippy::too_many_arguments)]
-fn enc_vault_record(
-    vault: Address,
-    name: &str,
-    risk_label: &str,
-    mandate: &str,
-    status: u8,
-    receipt_token: Address,
-    deposit_cap: U256,
-    exit_fee_bps: u16,
-    registered_at: u64,
-) -> String {
-    use alloy_sol_types::SolCall;
-    let record = VaultRegistry::VaultRecord {
-        vault,
-        name: name.to_string(),
-        riskLabel: risk_label.to_string(),
-        mandate: mandate.to_string(),
+/// ABI-encode a realistic `VaultRegistry.getVault` return value.
+///
+/// **Deliberately does not go through `VaultRegistry::getVaultCall`** (issue
+/// #1362). The old version of this helper encoded through the very binding the
+/// command decodes with, so it round-tripped the client's own assumption: the
+/// committed ABI declared a nine-field `VaultRecord`, the mock encoded a
+/// nine-field `VaultRecord`, and the test stayed green while `rmpc get-vaults`
+/// could not decode a single real registry response.
+///
+/// The layout below is taken from `contracts/VaultRegistry.sol` directly —
+///
+/// ```solidity
+/// function getVault(address vault)
+///     external view returns (VaultMetadata memory metadata, VaultStatus status);
+/// struct VaultMetadata { string name; address asset; uint256 registeredAt; }
+/// ```
+///
+/// — i.e. **two** top-level outputs, `((string,address,uint256),uint8)`, encoded
+/// as return params. Nothing here reads `abi/VaultRegistry.json`, so these
+/// tests fail if that file drifts from the contract again.
+fn enc_vault_record(name: &str, asset: Address, registered_at: u64, status: u8) -> String {
+    use alloy_sol_types::{sol_data, SolType};
+
+    /// `struct VaultMetadata { string name; address asset; uint256 registeredAt; }`
+    type VaultMetadataAbi = (sol_data::String, sol_data::Address, sol_data::Uint<256>);
+    /// `returns (VaultMetadata metadata, VaultStatus status)` — two outputs.
+    type GetVaultReturnAbi = (VaultMetadataAbi, sol_data::Uint<8>);
+
+    let blob = GetVaultReturnAbi::abi_encode_params(&(
+        (name.to_string(), asset, U256::from(registered_at)),
         status,
-        receiptToken: receipt_token,
-        depositCap: deposit_cap,
-        exitFeeBps: exit_fee_bps,
-        registeredAt: registered_at,
-    };
-    let blob = VaultRegistry::getVaultCall::abi_encode_returns(&(record,));
+    ));
     format!("0x{}", ahex::encode(blob))
 }
 
@@ -204,15 +210,10 @@ async fn get_vaults_one_registered_vault() {
         >()))
         .with_status(200)
         .with_body(jrpc_result(&enc_vault_record(
-            VAULT,
             "RobotMoney USDC Vault",
-            "STABLE_YIELD",
-            "Deposit USDC, earn yield",
-            0, // Active
-            VAULT,
-            U256::ZERO,
-            0,
+            USDC,
             1_700_000_000,
+            0, // Active
         )))
         .expect_at_least(0)
         .create_async()
@@ -247,11 +248,13 @@ async fn get_vaults_one_registered_vault() {
         format!("{VAULT:#x}")
     );
     assert_eq!(vault["name"], "RobotMoney USDC Vault");
-    assert_eq!(vault["risk_label"], "STABLE_YIELD");
+    assert_eq!(
+        vault["asset"].as_str().unwrap().to_lowercase(),
+        format!("{USDC:#x}")
+    );
     assert_eq!(vault["status"], "active");
+    assert_eq!(vault["registered_at"], 1_700_000_000u64);
     assert_eq!(vault["total_assets"].as_str().unwrap(), "5000000");
-    assert_eq!(vault["deposit_cap"].as_str().unwrap(), "0");
-    assert_eq!(vault["exit_fee_bps"], 0);
 }
 
 /// Paused vault: status field in output is "paused".
@@ -294,15 +297,10 @@ async fn get_vaults_paused_vault_status() {
         >()))
         .with_status(200)
         .with_body(jrpc_result(&enc_vault_record(
-            VAULT,
             "Paused Vault",
-            "STABLE_YIELD",
-            "",
-            1, // Paused
-            VAULT,
-            U256::ZERO,
-            0,
+            USDC,
             1_700_000_000,
+            1, // Paused
         )))
         .expect_at_least(0)
         .create_async()
@@ -366,15 +364,10 @@ async fn get_vault_address_happy_path() {
         >()))
         .with_status(200)
         .with_body(jrpc_result(&enc_vault_record(
-            VAULT,
             "Robot Money Vault",
-            "STABLE_YIELD",
-            "Yield-bearing USDC vault",
-            0, // Active
-            VAULT,
-            U256::from(1_000_000_000u64),
-            10,
+            USDC,
             1_715_000_000,
+            0, // Active
         )))
         .expect_at_least(0)
         .create_async()
@@ -453,9 +446,7 @@ async fn get_vault_address_happy_path() {
         format!("{VAULT:#x}")
     );
     assert_eq!(d["name"], "Robot Money Vault");
-    assert_eq!(d["risk_label"], "STABLE_YIELD");
     assert_eq!(d["status"], "active");
-    assert_eq!(d["exit_fee_bps"], 10);
     assert_eq!(d["registered_at"], 1_715_000_000u64);
     assert_eq!(d["total_assets"].as_str().unwrap(), "2000000");
     assert_eq!(d["total_supply"].as_str().unwrap(), "1000000");
@@ -466,7 +457,6 @@ async fn get_vault_address_happy_path() {
         format!("{USDC:#x}")
     );
     assert_eq!(d["decimals"], 6);
-    assert_eq!(d["deposit_cap"].as_str().unwrap(), "1000000000");
 }
 
 /// Unregistered address: getVault reverts → command exits non-zero.

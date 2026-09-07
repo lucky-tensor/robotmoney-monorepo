@@ -14,8 +14,10 @@
 //! 2. **Registry mode** (`--address <addr>`): looks up the vault in the
 //!    `VaultRegistry` contract at `config.registry_address`, then augments
 //!    with live ERC-4626 state (`totalAssets`, `totalSupply`, `share_price`).
-//!    Returns registry metadata (name, risk_label, status, deposit_cap,
-//!    exit_fee_bps, receipt_token_address) plus live accounting state.
+//!    Returns registry metadata (name, status, registered_at) plus live
+//!    accounting state. `getVault` returns **two** top-level outputs —
+//!    `(VaultMetadata metadata, VaultStatus status)` — so it decodes as a
+//!    positional tuple, not one merged struct (issue #1362).
 //!    Exits non-zero when the address is not registered.
 //!
 //! `share_price` is computed as `totalAssets * 10^decimals / totalSupply`,
@@ -24,7 +26,9 @@
 //!
 //! Per §9 acceptance criteria, fields not exposed by the deployed contract
 //! surface are reported as `"not_onchain"` in the `notes` map (config-vault
-//! mode only). Registry mode reports those fields from the registry record.
+//! mode only). Registry mode omits them: the registry does not carry
+//! `deposit_cap`, `exit_fee_bps`, a risk label or a mandate either — see
+//! `RegistryVaultData` and issue #1362.
 //!
 //! Exit codes: 0 (envelope, possibly partial), 3 (pre-read setup fail).
 
@@ -103,26 +107,25 @@ impl Default for VaultNotes {
 }
 
 /// `data` payload for `rmpc get-vault <address>` (registry mode).
-/// Includes all `VaultRecord` fields from the registry plus live ERC-4626
+/// Includes every field the registry actually returns plus live ERC-4626
 /// accounting state. Field order is the wire order; snapshot tests assert on it.
+///
+/// `risk_label`, `mandate`, `receipt_token_address`, `deposit_cap` and
+/// `exit_fee_bps` are gone (issue #1362): they came from an aspirational
+/// registry read shape (`docs/technical/vault-registry-decisions.md` §3.4) that
+/// the shipped `VaultRegistry.sol` (#329) never implemented, so this command
+/// could not decode a real `getVault` response at all. Issue #1348 removed the
+/// same five from the dapp's `VaultRecord`; `deposit_cap` and `exit_fee_bps`
+/// have real live getters on the vault contract itself, and the receipt token
+/// always equals the vault address.
 #[derive(Debug, Default, Serialize)]
 pub struct RegistryVaultData {
     /// Vault address (from registry record).
     pub address: String,
     /// Human-readable vault name from the registry.
     pub name: String,
-    /// Risk category label (e.g. `"stable-yield"`).
-    pub risk_label: String,
-    /// Short mandate text.
-    pub mandate: String,
     /// Operational status: `"active"`, `"paused"`, or `"retired"`.
     pub status: String,
-    /// Receipt token address (== vault address for ERC-4626).
-    pub receipt_token_address: String,
-    /// Maximum total-assets cap; `"0"` means no cap.
-    pub deposit_cap: DecimalU256,
-    /// Exit fee in basis points.
-    pub exit_fee_bps: u16,
     /// Unix timestamp when the vault was registered.
     pub registered_at: u64,
     /// `vault.totalAssets()` — live from chain.
@@ -333,21 +336,16 @@ async fn read_vault_from_registry(
     let block_number = rpc.block_number().await?;
     let block_tag = format!("0x{block_number:x}");
 
-    // Fetch the VaultRecord from the registry. This is a hard-fail: if the
-    // vault is not registered the call reverts with VaultNotRegistered and
-    // we propagate the error so the caller exits non-zero.
+    // Fetch the registry record. This is a hard-fail: if the vault is not
+    // registered the call reverts with NotRegistered and we propagate the
+    // error so the caller exits non-zero.
     let record = call_get_vault(rpc, registry, vault, &block_tag).await?;
 
     let data = RegistryVaultData {
         address: format!("{vault:#x}"),
-        name: record.name.clone(),
-        risk_label: record.riskLabel.clone(),
-        mandate: record.mandate.clone(),
+        name: record.metadata.name.clone(),
         status: status_to_str(record.status).to_string(),
-        receipt_token_address: format!("{:#x}", record.receiptToken),
-        deposit_cap: DecimalU256(record.depositCap),
-        exit_fee_bps: record.exitFeeBps,
-        registered_at: record.registeredAt,
+        registered_at: record.metadata.registeredAt.saturating_to::<u64>(),
         ..Default::default()
     };
     let mut b = PartialBuilder::new(chain_id, block_number, data);
@@ -392,14 +390,19 @@ async fn read_vault_from_registry(
     Ok(b.finish())
 }
 
-/// Call `VaultRegistry.getVault(address)` and return the decoded `VaultRecord`.
+/// Call `VaultRegistry.getVault(address)` and return the decoded return value.
 /// Returns `Err` if the call fails (including revert for unregistered vault).
+///
+/// `getVault` returns two top-level outputs — `(VaultMetadata metadata, uint8
+/// status)` — so the decode yields a positional tuple (`getVaultReturn`), not
+/// a single struct. Decoding it as a nine-field struct is the drift this
+/// function was fixed for (issue #1362).
 async fn call_get_vault(
     rpc: &FailoverRpcClient,
     registry: Address,
     vault: Address,
     block_tag: &str,
-) -> crate::errors::Result<VaultRegistry::VaultRecord> {
+) -> crate::errors::Result<VaultRegistry::getVaultReturn> {
     let data = VaultRegistry::getVaultCall { vault }.abi_encode();
     let out = rpc
         .eth_call(
@@ -413,7 +416,7 @@ async fn call_get_vault(
         .await?;
     let r = VaultRegistry::getVaultCall::abi_decode_returns(&out, true)
         .map_err(|e| crate::errors::RmpcError::ErrRpcDecode(format!("getVault abi decode: {e}")))?;
-    Ok(r._0)
+    Ok(r)
 }
 
 /// Compute `totalAssets * 10^decimals / totalSupply` as a decimal

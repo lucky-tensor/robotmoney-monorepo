@@ -17,67 +17,62 @@
 //! separate matches §3.5 ("the Rust binary must remain the only path to a
 //! signed deposit tx; no alloy provider is exposed externally").
 
-use alloy_sol_types::sol;
+/// Expand one `sol!` binding inside its own private module, then re-export the
+/// contract module so callers keep writing `crate::gateway::<Contract>`.
+///
+/// The wrapper is load-bearing, not cosmetic (issue #1362). `sol!` emits a
+/// module per *namespace* it sees, and a full Foundry ABI names the declaring
+/// contract of every struct it borrows: `PortfolioRouter.json` carries
+/// `struct VaultRegistry.VaultMetadata`, so expanding it at file scope defines
+/// a second `VaultRegistry` module alongside the real `VaultRegistry` binding
+/// and the crate stops compiling. That collision is why these files were
+/// hand-trimmed excerpts in the first place. One private module per binding
+/// keeps every generated namespace local, so any binding can be the complete
+/// artifact ABI without colliding with its neighbours.
+macro_rules! sol_binding {
+    ($module:ident, $contract:ident, $abi:literal) => {
+        mod $module {
+            alloy_sol_types::sol!(
+                #[sol(abi)]
+                #[allow(missing_docs, clippy::too_many_arguments)]
+                $contract,
+                $abi
+            );
+        }
+        pub use $module::$contract;
+    };
+}
 
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
+sol_binding!(
+    robot_money_gateway,
     RobotMoneyGateway,
     "abi/RobotMoneyGateway.json"
 );
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
-    Erc20,
-    "abi/Erc20.json"
-);
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
-    MockVault,
-    "abi/MockVault.json"
-);
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
-    VaultRegistry,
-    "abi/VaultRegistry.json"
-);
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
+sol_binding!(erc20, Erc20, "abi/Erc20.json");
+sol_binding!(mock_vault, MockVault, "abi/MockVault.json");
+sol_binding!(vault_registry, VaultRegistry, "abi/VaultRegistry.json");
+sol_binding!(
+    portfolio_router,
     PortfolioRouter,
     "abi/PortfolioRouter.json"
 );
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
+sol_binding!(
+    router_governance,
     RouterGovernance,
     "abi/RouterGovernance.json"
 );
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
+sol_binding!(
+    timelock_controller,
     TimelockController,
     "abi/TimelockController.json"
 );
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
+sol_binding!(
+    investment_committee_policy,
     InvestmentCommitteePolicy,
     "abi/InvestmentCommitteePolicy.json"
 );
-
-sol!(
-    #[sol(abi)]
-    #[allow(missing_docs, clippy::too_many_arguments)]
+sol_binding!(
+    consensus_recommendation_receipt,
     ConsensusRecommendationReceipt,
     "abi/ConsensusRecommendationReceipt.json"
 );
@@ -86,7 +81,7 @@ sol!(
 mod tests {
     use super::*;
     use alloy_primitives::{address, b256, keccak256, Address, Bytes, LogData, B256, U256};
-    use alloy_sol_types::{SolCall, SolError, SolEvent};
+    use alloy_sol_types::{sol, SolCall, SolError, SolEvent};
 
     /// The `deposit` selector must match `keccak256("deposit(bytes32,uint256,uint64,bytes32)")[..4]`.
     /// This is the load-bearing cross-check that the generated bindings line
@@ -226,6 +221,98 @@ mod tests {
         assert_eq!(decoded.assetRecipient, asset_recv);
         assert_eq!(decoded.maxWithdrawPerPayment, U256::from(500_000u64));
         assert_eq!(decoded.maxWithdrawPerWindow, U256::from(5_000_000u64));
+    }
+
+    // The nine-field `VaultRecord` that `abi/VaultRegistry.json` declared for
+    // `getVault` before issue #1362 — an aspirational shape from
+    // `docs/technical/vault-registry-decisions.md` §3.4 that the shipped
+    // `VaultRegistry.sol` (#329) never implemented. Kept here, and only here,
+    // as the negative control for the test below.
+    sol! {
+        #[allow(missing_docs)]
+        struct StaleVaultRecord {
+            address vault;
+            string name;
+            string riskLabel;
+            string mandate;
+            uint8 status;
+            address receiptToken;
+            uint256 depositCap;
+            uint16 exitFeeBps;
+            uint64 registeredAt;
+        }
+
+        #[allow(missing_docs)]
+        function getVaultStale(address vault) external view returns (StaleVaultRecord);
+    }
+
+    /// `VaultRegistry.getVault` return data, laid out by hand from
+    /// `contracts/VaultRegistry.sol` rather than from any binding:
+    ///
+    /// ```solidity
+    /// struct VaultMetadata { string name; address asset; uint256 registeredAt; }
+    /// function getVault(address) external view
+    ///     returns (VaultMetadata memory metadata, VaultStatus status);
+    /// ```
+    ///
+    /// Two top-level outputs, so the head is `[offset(metadata), status]` and
+    /// the metadata tuple follows at that offset. Building the words by hand is
+    /// the point: an encoder driven by `abi/VaultRegistry.json` would just
+    /// round-trip whatever that file happens to claim.
+    fn real_get_vault_return_data(
+        name: &str,
+        asset: Address,
+        registered_at: u64,
+        status: u8,
+    ) -> Vec<u8> {
+        fn word(n: u64) -> [u8; 32] {
+            U256::from(n).to_be_bytes::<32>()
+        }
+        let mut blob = Vec::new();
+        // head[0]: offset of `metadata`, past the two head words.
+        blob.extend_from_slice(&word(0x40));
+        // head[1]: `status` (uint8, right-aligned).
+        blob.extend_from_slice(&word(status as u64));
+        // metadata tuple, base = 0x40. Its own head is [offset(name), asset,
+        // registeredAt]; `name` data starts one word past that head.
+        blob.extend_from_slice(&word(0x60));
+        let mut w = [0u8; 32];
+        w[12..].copy_from_slice(asset.as_slice());
+        blob.extend_from_slice(&w);
+        blob.extend_from_slice(&word(registered_at));
+        blob.extend_from_slice(&word(name.len() as u64));
+        let mut padded = name.as_bytes().to_vec();
+        padded.resize(name.len().div_ceil(32) * 32, 0);
+        blob.extend_from_slice(&padded);
+        blob
+    }
+
+    /// `rmpc get-vaults` / `get-vault` must decode what the deployed
+    /// `VaultRegistry` actually returns.
+    ///
+    /// Before issue #1362 the committed `abi/VaultRegistry.json` declared
+    /// `getVault` as returning a single nine-field `VaultRecord`, so both
+    /// commands' `abi_decode_returns` calls could not read a real registry
+    /// response at all. The `assert!(... .is_err())` half is the negative
+    /// control: it pins that this test discriminates between the two shapes
+    /// rather than merely re-stating the current one.
+    #[test]
+    fn get_vault_decodes_the_registry_two_output_shape() {
+        let asset: Address = address!("00000000000000000000000000000000000000aa");
+        let blob = real_get_vault_return_data("Robot Money USDC", asset, 1_715_000_000, 2);
+
+        let decoded = VaultRegistry::getVaultCall::abi_decode_returns(&blob, true)
+            .expect("getVault must decode VaultRegistry.sol's (VaultMetadata, VaultStatus)");
+        assert_eq!(decoded.metadata.name, "Robot Money USDC");
+        assert_eq!(decoded.metadata.asset, asset);
+        assert_eq!(decoded.metadata.registeredAt, U256::from(1_715_000_000u64));
+        assert_eq!(decoded.status, 2, "VaultStatus::Retired");
+
+        assert!(
+            getVaultStaleCall::abi_decode_returns(&blob, true).is_err(),
+            "the pre-#1362 nine-field VaultRecord must NOT decode real registry \
+             return data — if it does, this test no longer proves anything"
+        );
     }
 
     /// The ERC-20 read-only views we need for preflight: `allowance` and
