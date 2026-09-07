@@ -351,13 +351,32 @@ residual structural risk and `fork_indexer.rs`'s ungated variant are tracked in
 issue #1383.
 
 ### Detecting check
-The fixtures no longer return `Option`: `pg_fixture() -> PgFixture` panics with a
+The fixtures no longer return `Option` — `try_pg_fixture() -> Option<PgFixture>`
+became `pg_fixture() -> PgFixture` in `services/watchdog/tests/common/mod.rs`, and
+`try_pool() -> Option<PgPool>` became `pg_pool() -> PgPool` in
+`clients/explorer-api/tests/canonical_schema.rs`. Both panic with a
 `REQUIRED DEPENDENCY UNAVAILABLE` prefix naming Docker, so the `else { return; }`
 guard is not merely discouraged but **uncompilable** — a future caller cannot
-reintroduce the shape without first re-adding the sentinel. The panic reds
-`.github/workflows/suite-20-watchdog.yml`'s `watchdog-integration` job and
-`.github/workflows/suite-08-explorer-indexer.yml`'s `explorer-api-committee-regime`
-job, both of which run on every PR, and both of which run their targets through
-`cargo_test_require_executed.sh` so a zero-collected run is also red. Re-verify by
-running the built test binary with `docker` absent from `PATH` and confirming a
-non-zero exit, as recorded on PR #1381.
+reintroduce the shape at these call sites without first re-adding the sentinel.
+That is the whole of the automated protection, and its reach is narrower than a
+one-line summary would suggest:
+
+- The panic reds `.github/workflows/suite-20-watchdog.yml`'s `watchdog-integration`
+  job, which carries no `if:` guard and so runs on every PR, drafts included. Only
+  that job's `cursor_and_volume` step wraps the run in
+  `.github/scripts/cargo_test_require_executed.sh`; its `alert_webhook` and
+  `threshold_breach` steps are plain `cargo test`. For those two the fixture panic
+  is the *only* thing standing between a Docker-less runner and a green job.
+- It also reds `.github/workflows/suite-08-explorer-indexer.yml`'s
+  `explorer-api-committee-regime` job, which does run all four of its targets
+  through the executed-count guard and runs `docker version` up front — but which
+  is gated `if: … github.event.pull_request.draft == false`. It does not run on
+  draft PRs, so that red arrives at ready-for-review, before merge, rather than on
+  every push.
+
+**Nothing detects a _new_ instance of this shape.** The type signature protects the
+call sites that exist; no check would catch a future author introducing another
+`Option`-returning fixture elsewhere in the tree, and the surviving
+`services/explorer-indexer/` fixture is guarded only by an environment variable
+(issue #1383). Re-verify by hand: run a built test binary with `docker` absent from
+`PATH` and confirm a non-zero exit, as recorded on PR #1381.
