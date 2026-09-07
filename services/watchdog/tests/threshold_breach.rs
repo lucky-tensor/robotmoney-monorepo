@@ -15,7 +15,7 @@
 mod common;
 
 use bigdecimal::BigDecimal;
-use common::try_pg_fixture;
+use common::pg_fixture;
 use reqwest::Client;
 use std::collections::HashMap;
 use watchdog::{
@@ -138,9 +138,7 @@ fn make_alert_config(per_block_mint: u64, webhook_url: &str) -> Config {
 /// Deposits that exceed the per-block threshold → watchdog detects breach.
 #[tokio::test]
 async fn per_block_mint_breach_detected() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     use common::MockWebhookServer;
     let server = MockWebhookServer::start().await;
@@ -192,9 +190,7 @@ async fn per_block_mint_breach_detected() {
 /// Deposits below the threshold → no breach detected.
 #[tokio::test]
 async fn deposits_within_threshold_no_breach() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     use common::MockWebhookServer;
     let server = MockWebhookServer::start().await;
@@ -264,9 +260,7 @@ fn config_missing_threshold_is_fatal() {
 /// Empty block (no deposits) → cycle reports Ok.
 #[tokio::test]
 async fn empty_block_is_ok() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     use common::MockWebhookServer;
     let server = MockWebhookServer::start().await;

@@ -17,7 +17,7 @@
 mod common;
 
 use bigdecimal::BigDecimal;
-use common::{try_pg_fixture, HangingServer, MockWebhookServer};
+use common::{pg_fixture, HangingServer, MockWebhookServer};
 use reqwest::Client;
 use std::collections::HashMap;
 use watchdog::{
@@ -240,9 +240,7 @@ fn per_vault_config(
 /// under the (looser) global limit.
 #[tokio::test]
 async fn per_vault_breach_under_passing_global_limit() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let server = MockWebhookServer::start().await;
     let client = Client::new();
 
@@ -300,9 +298,7 @@ async fn per_vault_breach_under_passing_global_limit() {
 /// vault A's per-vault check, and vault A's scoped volume only counts vault A.
 #[tokio::test]
 async fn per_vault_volume_is_accounted_per_vault() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     seed_chain(&fx.pool).await;
     seed_block(&fx.pool, 600, 1_700_000_000).await;
 
@@ -349,9 +345,7 @@ async fn per_vault_volume_is_accounted_per_vault() {
 /// The cursor loop must evaluate that block and raise a per-block breach for it.
 #[tokio::test]
 async fn cursor_loop_breaches_on_spike_in_non_latest_block() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let server = MockWebhookServer::start().await;
     let config = alert_only_config(500_000, 999_999_999, &server.url);
     let client = Client::new();
@@ -410,9 +404,7 @@ async fn cursor_loop_breaches_on_spike_in_non_latest_block() {
 /// count the amount exactly once (legs only), not parent + legs (~2×).
 #[tokio::test]
 async fn routed_deposit_counted_once_in_mint_volume() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     seed_chain(&fx.pool).await;
     seed_block(&fx.pool, 200, 1_700_000_000).await;
 
@@ -438,9 +430,7 @@ async fn routed_deposit_counted_once_in_mint_volume() {
 /// mint volume (IDX-4); a vault withdrawal must contribute to burn volume.
 #[tokio::test]
 async fn direct_deposit_and_withdrawal_reflected_in_volume() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     seed_chain(&fx.pool).await;
     seed_block(&fx.pool, 300, 1_700_000_000).await;
 
@@ -475,9 +465,7 @@ async fn direct_deposit_and_withdrawal_reflected_in_volume() {
 /// must NOT be double-counted on top of the gateway deposit.
 #[tokio::test]
 async fn gateway_deposit_not_double_counted_via_vault_transfer() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     seed_chain(&fx.pool).await;
     seed_block(&fx.pool, 310, 1_700_000_000).await;
 
@@ -502,9 +490,7 @@ async fn gateway_deposit_not_double_counted_via_vault_transfer() {
 /// still be dispatched (alert is sent before the pause and is not starved).
 #[tokio::test]
 async fn pause_rpc_timeout_does_not_starve_alert() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let webhook = MockWebhookServer::start().await;
     let hung_rpc = HangingServer::start().await;
 

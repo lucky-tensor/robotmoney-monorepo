@@ -8,8 +8,10 @@
 //! checks prove there is one canonical schema and that both crates can
 //! stand it up identically.
 //!
-//! Skips cleanly when Docker is not available so contributor laptops
-//! without docker still run `cargo test` green.
+//! Check (a) needs no Docker and runs everywhere. Check (b) needs a Postgres
+//! testcontainer and **fails loudly**, naming Docker, when one cannot be booted —
+//! it used to `return` early instead, which the harness reported as a pass having
+//! asserted nothing (#1377).
 
 mod common;
 
@@ -42,10 +44,7 @@ fn migration_bytes_equal_indexer_canonical() {
 /// either crate ever applies a different DDL, this test fails.
 #[tokio::test]
 async fn canonical_schema_yields_nine_minimum_tables() {
-    let Some(pool) = try_pool().await else {
-        eprintln!("[explorer-api-tests] skipping: docker not available");
-        return;
-    };
+    let pool = pg_pool().await;
     apply_migrations(&pool).await;
 
     let expected = [
@@ -72,36 +71,64 @@ async fn canonical_schema_yields_nine_minimum_tables() {
     }
 }
 
-async fn try_pool() -> Option<PgPool> {
-    which_docker()?;
+/// Prefix every unmet-dependency panic carries, so one grep over a job log finds
+/// the cause without reading the backtrace.
+const MISSING: &str = "[explorer-api-tests] REQUIRED DEPENDENCY UNAVAILABLE";
+
+/// Boot a Postgres testcontainer and return a pool against it.
+///
+/// # Panics
+///
+/// Panics — naming the missing dependency — when Docker is unusable or the
+/// container cannot be started, addressed, or connected to. It does **not** return
+/// an "unavailable" sentinel: the caller previously turned that sentinel into an
+/// early `return`, which the harness reported as a pass having asserted nothing
+/// (#1377). The `explorer-api-committee-regime` job that runs this target already
+/// verifies Docker is present before invoking it.
+async fn pg_pool() -> PgPool {
+    assert!(
+        docker_usable(),
+        "{MISSING}: `docker --version` did not succeed. This test needs a Postgres \
+         testcontainer to prove canonical-schema parity — install/start Docker, or \
+         run only `cargo test -p explorer-api --test canonical_schema \
+         migration_bytes_equal_indexer_canonical`, which needs none. This is a hard \
+         failure rather than a skip on purpose: an absent dependency must red the job."
+    );
     let container = match Postgres::default().start().await {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("[explorer-api-tests] postgres container failed to start: {e}");
-            return None;
-        }
+        Err(e) => panic!(
+            "{MISSING}: the Postgres testcontainer failed to start: {e}. Docker responds \
+             but is not usable (daemon down, socket permissions, or no image pull)."
+        ),
     };
     // Leak the container handle for the duration of this single test
     // process; it will be reaped when the test process exits. We hold
     // it alive only to keep the connection valid below.
-    let host = container.get_host().await.ok()?;
-    let port = container.get_host_port_ipv4(5432).await.ok()?;
+    let host = container
+        .get_host()
+        .await
+        .unwrap_or_else(|e| panic!("{MISSING}: Postgres testcontainer host unknown: {e}"));
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .unwrap_or_else(|e| panic!("{MISSING}: Postgres testcontainer port 5432 unmapped: {e}"));
     let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
     let pool = PgPoolOptions::new()
         .max_connections(2)
         .connect(&url)
         .await
-        .ok()?;
+        .unwrap_or_else(|e| {
+            panic!("{MISSING}: could not connect to the Postgres testcontainer at {url}: {e}")
+        });
     // Box-leak the container so it outlives the pool; an alternative is
     // to thread it through, but this test only needs a one-shot fixture.
     Box::leak(Box::new(container));
-    Some(pool)
+    pool
 }
 
-fn which_docker() -> Option<()> {
+fn docker_usable() -> bool {
     std::process::Command::new("docker")
         .arg("--version")
         .output()
-        .ok()
-        .and_then(|o| if o.status.success() { Some(()) } else { None })
+        .is_ok_and(|o| o.status.success())
 }

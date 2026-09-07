@@ -299,3 +299,65 @@ with `sha256sum` removed from `PATH` and asserts it still produces a
 checksum (via the `shasum` branch) rather than silently producing nothing,
 run via `plugins/robotmoney-swarm/tests/run-tests.sh` in
 `.github/workflows/suite-17-swarm-plugin.yml` on every PR.
+
+---
+
+## An `Option`-returning fixture turns a missing dependency into a passing test
+
+### Name
+`optional-fixture-early-return`
+
+### Mechanism
+A test fixture that needs an external resource (a database, a devnet RPC, model
+weights) is written as a fallible constructor returning `Option`/`nil`/`None`,
+and every caller unwraps it with an early `return`:
+
+```rust
+let Some(fx) = try_pg_fixture().await else { return; };
+```
+
+When the resource is absent the constructor hands back its "unavailable"
+sentinel, the test body never executes, and the function returns normally — which
+is precisely how a test harness encodes **success**. The job prints
+`test result: ok. N passed`, the executed-test guard
+(`.github/scripts/cargo_test_require_executed.sh`) sees a healthy non-zero count,
+and nothing anywhere distinguishes "asserted and held" from "asserted nothing."
+The suite is greenest exactly when it verified least. The two mechanisms are
+complementary and this shape falls in the gap between them: the executed-count
+guard counts *passed tests*, not *executed assertions*.
+
+An environment-gated escalation (panic when `CI` is set, skip otherwise) narrows
+the window but does not close it, because the fixture still returns an `Option`
+and the `else { return; }` guard at the call site stays legal and copy-pasteable.
+The structural fix is to delete the sentinel: a fixture that returns the resource
+itself, and panics naming the missing dependency, gives a caller no `None` to
+match on.
+
+### Instance
+`services/watchdog/tests/common/mod.rs::try_pg_fixture` returned
+`Option<PgFixture>` and all ten of its callers in `tests/cursor_and_volume.rs` and
+`tests/threshold_breach.rs` wrote the guard above (issue #1377). Measured on the
+pre-fix tree with `docker` removed from `PATH`, both binaries reported
+`test result: ok` — 3 of 4 and 7 of 7 tests "passing" in 0.00s having booted no
+container. PR #1376 had added `assert!(!config.action.has_pauser_key(), ...)` inside
+`pause_rpc_timeout_does_not_starve_alert`, one of the ten, so that assertion would
+have silently not run. It did not bite: run 34148606346 provisioned real containers
+(8.4s container boot, ~1.4-2.6s per test), and the same property was independently
+proven by a dependency-free unit test — this was a latent shape, not an outage.
+`clients/explorer-api/tests/canonical_schema.rs` carried the same one-call-site
+version, also fixed under #1377. The `services/explorer-indexer/` fixture keeps the
+`Option` return with an environment-gated escalation added by issue #1283; the
+residual structural risk and `fork_indexer.rs`'s ungated variant are tracked in
+issue #1383.
+
+### Detecting check
+The fixtures no longer return `Option`: `pg_fixture() -> PgFixture` panics with a
+`REQUIRED DEPENDENCY UNAVAILABLE` prefix naming Docker, so the `else { return; }`
+guard is not merely discouraged but **uncompilable** — a future caller cannot
+reintroduce the shape without first re-adding the sentinel. The panic reds
+`.github/workflows/suite-20-watchdog.yml`'s `watchdog-integration` job and
+`.github/workflows/suite-08-explorer-indexer.yml`'s `explorer-api-committee-regime`
+job, both of which run on every PR, and both of which run their targets through
+`cargo_test_require_executed.sh` so a zero-collected run is also red. Re-verify by
+running the built test binary with `docker` absent from `PATH` and confirming a
+non-zero exit, as recorded on PR #1381.
