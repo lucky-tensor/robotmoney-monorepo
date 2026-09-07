@@ -27,14 +27,14 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 FAILURES=0
 
-# Write a manifest whose captured_at is $1 days from now, expressed as a
-# `date` offset ("-2 days" for the past, "+5 days" for the future). `date -d`
-# collapses a doubled sign, so the sign is passed explicitly rather than
-# negated here.
+# Write a manifest whose captured_at is $1 days from now (negative for the
+# past, positive for the future). Formatted via python3 rather than `date`
+# arithmetic so the self-test runs the same on GNU and BSD userlands — the
+# helper under test accepts both, and the test must not be the narrower one.
 write_manifest() {
-  local offset="$1" path="$2"
+  local days="$1" path="$2"
   local ts
-  ts="$(date -u -d "$offset" +%Y-%m-%dT%H:%M:%SZ)"
+  ts="$(python3 -c "import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$days")"
   jq -n --arg ts "$ts" '{fixture:"base-1.json",state_file:"base-1.anvil-state",fork_block:1,chain_id:8453,captured_at:$ts}' > "$path"
 }
 
@@ -78,9 +78,9 @@ run_case_absent() {
   echo "  ok: $name"
 }
 
-FRESH="$WORKDIR/fresh.json"; write_manifest "-2 days" "$FRESH"
-STALE="$WORKDIR/stale.json"; write_manifest "-48 days" "$STALE"
-FUTURE="$WORKDIR/future.json"; write_manifest "+5 days" "$FUTURE"
+FRESH="$WORKDIR/fresh.json"; write_manifest -2 "$FRESH"
+STALE="$WORKDIR/stale.json"; write_manifest -48 "$STALE"
+FUTURE="$WORKDIR/future.json"; write_manifest 5 "$FUTURE"
 
 echo "[selftest] soft path"
 run_case_absent "fresh pin emits no warning" 0 "::warning::" --manifest "$FRESH"

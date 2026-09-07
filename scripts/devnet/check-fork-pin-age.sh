@@ -86,7 +86,14 @@ if [ -z "$CAPTURED_AT" ]; then
   exit 2
 fi
 
-if ! CAPTURED_EPOCH="$(date -u -d "$CAPTURED_AT" +%s 2>/dev/null)"; then
+# `captured_at` is written by snapshot-fork.sh as `date -u +%Y-%m-%dT%H:%M:%SZ`.
+# GNU date parses it with -d; BSD/macOS date needs -j -f. Try both rather than
+# making this script Linux-only, since a maintainer refreshing the fixture is
+# exactly who runs check-fork-manifest.sh by hand.
+CAPTURED_EPOCH="$(date -u -d "$CAPTURED_AT" +%s 2>/dev/null \
+  || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$CAPTURED_AT" +%s 2>/dev/null \
+  || true)"
+if [ -z "$CAPTURED_EPOCH" ]; then
   echo "ERROR: $MANIFEST captured_at is not a parseable timestamp: $CAPTURED_AT" >&2
   exit 2
 fi
