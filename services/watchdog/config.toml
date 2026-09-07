@@ -42,9 +42,13 @@ gateway_rpc_url = "https://mainnet.base.org"
 gateway_address = "0x0000000000000000000000000000000000000000"
 
 # Hex-encoded private key for the PAUSER_ROLE account (must be funded for gas).
-# SECURITY: Do not commit a real key. Provide via WATCHDOG_PAUSER_PRIVATE_KEY_HEX
-# environment variable or a secrets manager at runtime.
-# Required when mode includes "pause".
+# SECURITY: Do not commit a real key. Provide via the WATCHDOG_PAUSER_KEY_HEX
+# environment variable (it overrides this literal) or a secrets manager at
+# runtime; this literal exists for local dev. Either way the daemon reads the key
+# once at startup, derives the signing key, and drops the raw hex.
+# Required when mode includes "pause" — and the all-zero placeholder below is not
+# a valid secp256k1 scalar, so a "pause" mode left on it exits non-zero at
+# startup instead of failing later at breach time.
 pauser_private_key_hex = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
 # Gas-price bump (basis points) applied over the network eth_gasPrice when

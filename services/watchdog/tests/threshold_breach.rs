@@ -153,7 +153,7 @@ async fn per_block_mint_breach_detected() {
     // Seed deposits totalling 600_000 (> 500_000 threshold).
     seed_deposits(&fx.pool, chain_id, block_number, &[300_000, 300_000]).await;
 
-    let result = run_cycle(&fx.pool, &config, &client, chain_id, block_number)
+    let result = run_cycle(&fx.pool, &config, &client, chain_id, block_number, None)
         .await
         .expect("cycle must not error");
 
@@ -207,7 +207,7 @@ async fn deposits_within_threshold_no_breach() {
     // Seed deposits totalling 200_000 (< 1_000_000 threshold).
     seed_deposits(&fx.pool, chain_id, block_number, &[100_000, 100_000]).await;
 
-    let result = run_cycle(&fx.pool, &config, &client, chain_id, block_number)
+    let result = run_cycle(&fx.pool, &config, &client, chain_id, block_number, None)
         .await
         .expect("cycle must not error");
 
@@ -279,7 +279,7 @@ async fn empty_block_is_ok() {
     // Seed a block with no deposits.
     seed_deposits(&fx.pool, chain_id, block_number, &[]).await;
 
-    let result = run_cycle(&fx.pool, &config, &client, chain_id, block_number)
+    let result = run_cycle(&fx.pool, &config, &client, chain_id, block_number, None)
         .await
         .expect("cycle must not error");
 

@@ -22,7 +22,10 @@ use reqwest::Client;
 use std::collections::HashMap;
 use watchdog::{
     alert::ThresholdKind,
-    config::{ActionConfig, ActionMode, Config, GlobalThresholds, SlaConfig, VaultThresholds},
+    config::{
+        ActionConfig, ActionMode, Config, GlobalThresholds, PauserKeyHex, SlaConfig,
+        VaultThresholds,
+    },
     receipt_liveness::ReceiptLivenessConfig,
     volume::{
         burn_volume_per_block, mint_volume_per_block, mint_volume_per_block_for_vault,
@@ -258,7 +261,7 @@ async fn per_vault_breach_under_passing_global_limit() {
     // 150_000 in vault A: under the 1_000_000 global, over the 100_000 vault cap.
     insert_agent_deposit(&fx.pool, 500, 0, &tx_hash(60), 150_000, Some(&VAULT_A)).await;
 
-    let result = run_cycle(&fx.pool, &config, &client, CHAIN_ID, 500)
+    let result = run_cycle(&fx.pool, &config, &client, CHAIN_ID, 500, None)
         .await
         .expect("cycle must not error");
 
@@ -369,7 +372,7 @@ async fn cursor_loop_breaches_on_spike_in_non_latest_block() {
         .await
         .unwrap();
 
-    let result = run_cycles_since_cursor(&fx.pool, &config, &client, CHAIN_ID, 102)
+    let result = run_cycles_since_cursor(&fx.pool, &config, &client, CHAIN_ID, 102, None)
         .await
         .expect("cycle must not error");
 
@@ -392,7 +395,7 @@ async fn cursor_loop_breaches_on_spike_in_non_latest_block() {
     );
 
     // A second run with no new blocks reports NoData and does not re-alert.
-    let again = run_cycles_since_cursor(&fx.pool, &config, &client, CHAIN_ID, 102)
+    let again = run_cycles_since_cursor(&fx.pool, &config, &client, CHAIN_ID, 102, None)
         .await
         .unwrap();
     assert_eq!(again, CycleResult::NoData, "no new blocks ⇒ NoData");
@@ -506,7 +509,7 @@ async fn pause_rpc_timeout_does_not_starve_alert() {
     let hung_rpc = HangingServer::start().await;
 
     // pause_and_alert with a 1-second SLA; the hung RPC will exceed it.
-    let config = Config {
+    let mut config = Config {
         global: GlobalThresholds {
             per_block_mint_limit_usdc: "500000".to_owned(),
             per_hour_mint_limit_usdc: "999999999999".to_owned(),
@@ -518,9 +521,9 @@ async fn pause_rpc_timeout_does_not_starve_alert() {
             webhook_url: Some(webhook.url.clone()),
             gateway_rpc_url: Some(hung_rpc.url.clone()),
             gateway_address: Some("0x000000000000000000000000000000000000dEaD".to_owned()),
-            pauser_private_key_hex: Some(
+            pauser_private_key_hex: Some(PauserKeyHex::new(
                 "1111111111111111111111111111111111111111111111111111111111111111".to_owned(),
-            ),
+            )),
             pause_fee_bump_bps: 1500,
         },
         sla: SlaConfig {
@@ -531,6 +534,17 @@ async fn pause_rpc_timeout_does_not_starve_alert() {
         // volume-path fixtures are unaffected by it (issue #1247 task 4.13).
         consensus_receipts: ReceiptLivenessConfig::default(),
     };
+    // Derive the signing state the way the daemon does — once, at "startup" —
+    // and confirm the raw hex is gone from the config afterwards (issue #1357).
+    let pauser = config
+        .take_pauser_signing_key()
+        .expect("configured pauser key must derive")
+        .expect("a pauser key was configured");
+    assert!(
+        !config.action.has_pauser_key(),
+        "the raw pauser key must not outlive the startup extraction"
+    );
+    let config = config;
     let client = Client::new();
 
     seed_chain(&fx.pool).await;
@@ -538,7 +552,7 @@ async fn pause_rpc_timeout_does_not_starve_alert() {
     insert_agent_deposit(&fx.pool, 400, 0, &tx_hash(50), 600_000, Some(&VAULT_A)).await;
 
     let start = std::time::Instant::now();
-    let result = run_cycle(&fx.pool, &config, &client, CHAIN_ID, 400)
+    let result = run_cycle(&fx.pool, &config, &client, CHAIN_ID, 400, Some(&pauser))
         .await
         .expect("cycle must not error even when pause RPC hangs");
     let elapsed = start.elapsed();

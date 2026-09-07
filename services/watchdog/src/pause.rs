@@ -32,10 +32,13 @@
 //! The gateway reverts with `PausedError()` if already paused — the watchdog treats
 //! this revert as a success (the gateway is already safe).
 
+use std::fmt;
+
 use alloy_primitives::{keccak256, Address, Bytes};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
+use zeroize::Zeroizing;
 
 use crate::WatchdogError;
 
@@ -45,17 +48,88 @@ pub fn pause_selector() -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
+/// Signing state for the PAUSER_ROLE account, derived once at startup from the
+/// configured key hex (see [`crate::config::Config::take_pauser_signing_key`]).
+///
+/// Holds the derived `k256` signing key and the sender address computed from it
+/// — never the hex text, and never a re-decodable raw 32-byte scalar field. The
+/// inner `k256::ecdsa::SigningKey` is `ZeroizeOnDrop`, so its secret scalar is
+/// wiped when this value drops.
+///
+/// `Debug` prints only the (public) sender address. Not `Clone`: the pause path
+/// borrows the single instance the daemon derived at startup rather than
+/// spreading copies of the scalar across the process.
+pub struct PauserSigningKey {
+    signing_key: k256::ecdsa::SigningKey,
+    address: Address,
+}
+
+impl PauserSigningKey {
+    /// Derive signing state from hex key text (optional `0x` prefix).
+    ///
+    /// The hex is decoded straight into a fixed-size zeroizing buffer — no
+    /// intermediate `Vec`/`String` copy of the scalar — and that buffer is wiped
+    /// when this function returns.
+    pub fn from_hex(key_hex: &str) -> Result<Self, WatchdogError> {
+        let trimmed = key_hex.trim();
+        let trimmed = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+        if trimmed.len() != 64 {
+            // Deliberately reports only the length, never the value.
+            return Err(WatchdogError::Config(format!(
+                "pauser private key must be 32 bytes (64 hex chars), got {} chars",
+                trimmed.len()
+            )));
+        }
+        let mut key_bytes = Zeroizing::new([0u8; 32]);
+        hex::decode_to_slice(trimmed, key_bytes.as_mut_slice())
+            .map_err(|e| WatchdogError::Config(format!("pauser private key decode failed: {e}")))?;
+        let signing_key = k256::ecdsa::SigningKey::from_bytes((&*key_bytes).into())
+            .map_err(|e| WatchdogError::Config(format!("invalid pauser key: {e}")))?;
+        let address = address_from_signing_key(&signing_key);
+        Ok(Self {
+            signing_key,
+            address,
+        })
+    }
+
+    /// The PAUSER_ROLE sender address derived from this key (public data).
+    pub fn address(&self) -> Address {
+        self.address
+    }
+}
+
+impl fmt::Debug for PauserSigningKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PauserSigningKey")
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Compute the EVM address for a signing key: keccak256 of the uncompressed
+/// public key (minus its `0x04` prefix), last 20 bytes.
+fn address_from_signing_key(signing_key: &k256::ecdsa::SigningKey) -> Address {
+    let verifying_key = signing_key.verifying_key();
+    let pubkey_bytes = verifying_key.to_encoded_point(false);
+    let pubkey_slice = &pubkey_bytes.as_bytes()[1..]; // strip 0x04 prefix
+    let hash = keccak256(pubkey_slice);
+    Address::from_slice(&hash[12..])
+}
+
 /// Parameters required to submit a `gateway.pause()` transaction.
+///
+/// Borrows the startup-derived [`PauserSigningKey`] rather than carrying key
+/// material of its own, so building these per breach copies no secret.
 #[derive(Debug, Clone)]
-pub struct PauseParams {
+pub struct PauseParams<'a> {
     /// JSON-RPC endpoint URL for the gateway chain.
     pub rpc_url: String,
     /// Deployed gateway contract address.
     pub gateway_address: Address,
     /// Chain ID (used in EIP-155 transaction signing).
     pub chain_id: u64,
-    /// ECDSA private key for the PAUSER_ROLE account (raw 32-byte scalar).
-    pub pauser_key: [u8; 32],
+    /// Signing state for the PAUSER_ROLE account, derived once at startup.
+    pub signer: &'a PauserSigningKey,
     /// Gas-price bump applied over the network `eth_gasPrice`, in basis points
     /// (e.g. `1500` = +15%). Lets a retried pause replace a stuck same-nonce tx by
     /// out-bidding it (scan finding WD-5). `0` submits at the network gas price.
@@ -78,16 +152,14 @@ fn bump_gas_price(gas_price: u64, fee_bump_bps: u64) -> u64 {
 /// caller can log a no-op rather than treating it as an error.
 ///
 /// All network / signing errors are returned as [`WatchdogError::Pause`].
-pub async fn trigger_pause(client: &Client, params: &PauseParams) -> Result<String, WatchdogError> {
-    // 1. Derive sender address from private key.
-    let signing_key = k256::ecdsa::SigningKey::from_bytes((&params.pauser_key).into())
-        .map_err(|e| WatchdogError::Pause(format!("invalid pauser key: {e}")))?;
-    let verifying_key = signing_key.verifying_key();
-    // alloy Address from uncompressed public key bytes (skip the 0x04 prefix).
-    let pubkey_bytes = verifying_key.to_encoded_point(false);
-    let pubkey_slice = &pubkey_bytes.as_bytes()[1..]; // strip 0x04 prefix
-    let hash = keccak256(pubkey_slice);
-    let from = Address::from_slice(&hash[12..]);
+pub async fn trigger_pause(
+    client: &Client,
+    params: &PauseParams<'_>,
+) -> Result<String, WatchdogError> {
+    // 1. Sender address and signing key were derived once at startup; a pause
+    //    attempt re-derives nothing from raw key material.
+    let signing_key = &params.signer.signing_key;
+    let from = params.signer.address();
 
     // 2. Fetch the CONFIRMED nonce (not pending) so a retry replaces a stuck
     //    same-nonce tx rather than queuing behind it (scan finding WD-5).
@@ -109,7 +181,7 @@ pub async fn trigger_pause(client: &Client, params: &PauseParams) -> Result<Stri
     let tx_hash = send_legacy_transaction(
         client,
         &params.rpc_url,
-        &signing_key,
+        signing_key,
         from,
         params.gateway_address,
         nonce,

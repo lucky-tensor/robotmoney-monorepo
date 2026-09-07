@@ -44,6 +44,11 @@ alloy-primitives = { version = "0.8", features = ["k256"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 # Hex encoding for addresses and raw transactions.
 hex = "0.4"
+# Zeroizing wrapper for the PAUSER_ROLE key hex, so the raw secret does not
+# outlive the single startup extraction that derives the signing key from it
+# (issue #1357). Already in Cargo.lock transitively via k256 — no new
+# supply-chain surface, just a direct dependency edge.
+zeroize = "1"
 
 # Error handling.
 thiserror = "1"

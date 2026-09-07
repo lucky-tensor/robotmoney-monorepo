@@ -3660,7 +3660,7 @@ checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 
 [[package]]
 name = "rust-payment-client"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -5330,6 +5330,7 @@ dependencies = [
  "toml",
  "tracing",
  "which",
+ "zeroize",
 ]
 
 [[package]]

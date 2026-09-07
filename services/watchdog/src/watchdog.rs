@@ -29,7 +29,7 @@ use tracing::{error, info, warn};
 use crate::{
     alert::{dispatch_alert, BreachEvent, ThresholdKind},
     config::Config,
-    pause::{trigger_pause, PauseParams},
+    pause::{trigger_pause, PauseParams, PauserSigningKey},
     volume::{
         burn_volume_per_block, burn_volume_per_block_for_vault, burn_volume_per_hour,
         burn_volume_per_hour_for_vault, mint_volume_per_block, mint_volume_per_block_for_vault,
@@ -59,12 +59,18 @@ const HOUR_WINDOW_SECS: i64 = 3600;
 /// [`run_cycles_since_cursor`], which evaluates every block since the cursor and
 /// persists progress; this single-block entry point is retained for tests and is
 /// also used internally per block by the cursor loop.
+///
+/// `pauser` carries the signing state derived once at startup by
+/// [`Config::take_pauser_signing_key`]; pass `None` when no pauser key is
+/// configured (alert-only deployments). The cycle never reads raw key material
+/// from `config`.
 pub async fn run_cycle(
     pool: &PgPool,
     config: &Config,
     client: &Client,
     chain_id: i64,
     block_number: i64,
+    pauser: Option<&PauserSigningKey>,
 ) -> Result<CycleResult, WatchdogError> {
     // Anchor the rolling per-hour window to indexed *chain* time, not wall-clock
     // (scan finding WD-2). Using the evaluated block's on-chain timestamp keeps
@@ -256,28 +262,32 @@ pub async fn run_cycle(
             .unwrap_or("")
             .to_owned();
         let gw_addr_str = config.action.gateway_address.as_deref().unwrap_or("");
-        let key_hex = config
-            .action
-            .pauser_private_key_hex
-            .as_deref()
-            .unwrap_or("");
 
-        match parse_pause_params(
-            rpc_url,
-            gw_addr_str,
-            key_hex,
-            chain_id,
-            config.action.pause_fee_bump_bps,
-        ) {
-            Ok(params) => match timeout(sla, trigger_pause(client, &params)).await {
-                Ok(Ok(tx)) => info!(tx_hash = %tx, "gateway.pause() submitted"),
-                Ok(Err(e)) => error!("gateway.pause() failed: {e}"),
-                Err(_) => error!(
-                    sla_secs = config.sla.max_response_secs,
-                    "gateway.pause() exceeded SLA budget; aborted (alert already dispatched)"
-                ),
+        match pauser {
+            Some(signer) => match parse_pause_params(
+                rpc_url,
+                gw_addr_str,
+                signer,
+                chain_id,
+                config.action.pause_fee_bump_bps,
+            ) {
+                Ok(params) => match timeout(sla, trigger_pause(client, &params)).await {
+                    Ok(Ok(tx)) => info!(tx_hash = %tx, "gateway.pause() submitted"),
+                    Ok(Err(e)) => error!("gateway.pause() failed: {e}"),
+                    Err(_) => error!(
+                        sla_secs = config.sla.max_response_secs,
+                        "gateway.pause() exceeded SLA budget; aborted (alert already dispatched)"
+                    ),
+                },
+                Err(e) => error!("pause params invalid: {e}"),
             },
-            Err(e) => error!("pause params invalid: {e}"),
+            // Startup validation rejects a pause mode with no key, so reaching
+            // here means the caller did not thread the derived signer through.
+            // Never silent: the pause simply did not happen.
+            None => error!(
+                "action.mode includes pause but no pauser signing key was derived \
+                 at startup; gateway.pause() NOT attempted (alert already dispatched)"
+            ),
         }
     }
 
@@ -390,6 +400,7 @@ pub async fn run_cycles_since_cursor(
     client: &Client,
     chain_id: i64,
     latest_indexed_block: i64,
+    pauser: Option<&PauserSigningKey>,
 ) -> Result<CycleResult, WatchdogError> {
     let cursor = load_cursor(pool, chain_id).await?;
     // First run: start one below the latest indexed block so we evaluate exactly
@@ -403,7 +414,7 @@ pub async fn run_cycles_since_cursor(
 
     let mut all_kinds: Vec<ThresholdKind> = Vec::new();
     for block_number in from_block..=latest_indexed_block {
-        match run_cycle(pool, config, client, chain_id, block_number).await {
+        match run_cycle(pool, config, client, chain_id, block_number, pauser).await {
             Ok(CycleResult::Breached(kinds)) => {
                 for k in kinds {
                     if !all_kinds.contains(&k) {
@@ -518,13 +529,16 @@ async fn evaluate_vault_breaches(
 }
 
 /// Parse and validate the gateway pause parameters from config strings.
-fn parse_pause_params(
+///
+/// Takes the startup-derived signing state by reference; no key material is
+/// decoded here, so a breach cycle never touches raw secret bytes.
+fn parse_pause_params<'a>(
     rpc_url: String,
     gw_addr_str: &str,
-    key_hex: &str,
+    signer: &'a PauserSigningKey,
     chain_id: i64,
     fee_bump_bps: u64,
-) -> Result<PauseParams, WatchdogError> {
+) -> Result<PauseParams<'a>, WatchdogError> {
     use alloy_primitives::Address;
     use std::str::FromStr;
 
@@ -532,22 +546,11 @@ fn parse_pause_params(
         WatchdogError::Pause(format!("invalid gateway address {gw_addr_str:?}: {e}"))
     })?;
 
-    let key_hex = key_hex.trim_start_matches("0x");
-    if key_hex.len() != 64 {
-        return Err(WatchdogError::Pause(format!(
-            "pauser_private_key_hex must be 32 bytes (64 hex chars), got {} chars",
-            key_hex.len()
-        )));
-    }
-    let mut key_bytes = [0u8; 32];
-    hex::decode_to_slice(key_hex, &mut key_bytes)
-        .map_err(|e| WatchdogError::Pause(format!("pauser key decode failed: {e}")))?;
-
     Ok(PauseParams {
         rpc_url,
         gateway_address,
         chain_id: chain_id as u64,
-        pauser_key: key_bytes,
+        signer,
         fee_bump_bps,
     })
 }
