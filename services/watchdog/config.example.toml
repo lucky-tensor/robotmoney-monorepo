@@ -12,7 +12,17 @@ database_url_env = "DATABASE_URL"
 [gateway]
 rpc_url_env = "WATCHDOG_RPC_URL"
 address_env = "WATCHDOG_GATEWAY_ADDRESS"
-pauser_key_env = "WATCHDOG_PAUSER_KEY"
+# The pauser key env var is WATCHDOG_PAUSER_KEY_HEX (was documented here as
+# WATCHDOG_PAUSER_KEY, a name the code never read — issue #1357). It holds the
+# PAUSER_ROLE private key as 64 hex chars, with or without a `0x` prefix, and
+# overrides the `action.pauser_private_key_hex` literal in config.toml when set.
+# Prefer it in deployments: a key delivered this way is never written to a file
+# on the host. The daemon reads it once at startup, derives the signing key, and
+# drops the raw hex — but note the value stays in the process environment block
+# (readable via /proc/<pid>/environ and inherited by any child process), so this
+# bounds the secret's lifetime in the daemon's own state rather than erasing it
+# from the machine.
+pauser_key_env = "WATCHDOG_PAUSER_KEY_HEX"
 
 [alerts]
 webhook_url_env = "WATCHDOG_ALERT_WEBHOOK_URL"

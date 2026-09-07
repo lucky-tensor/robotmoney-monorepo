@@ -1163,8 +1163,13 @@ or `pause_and_alert`. The alert path dispatches PagerDuty-compatible
 structured JSON through `src/alert.rs` to `action.webhook_url`. The pause
 path constructs and submits a `gateway.pause()` EIP-155 transaction through
 `src/pause.rs`, using `action.gateway_rpc_url`,
-`action.gateway_address`, and the funded PAUSER_ROLE key in
-`action.pauser_private_key_hex`. The pauser is distinct from `ADMIN_ROLE`:
+`action.gateway_address`, and the funded PAUSER_ROLE key from either
+`WATCHDOG_PAUSER_KEY_HEX` (preferred in deployments; it overrides the file)
+or the `action.pauser_private_key_hex` literal (local dev). Whichever source
+supplies it, the daemon consumes the raw key exactly once at startup, derives
+the signing key, and drops the hex — the poll loop signs from that derived
+state and no code path re-reads a raw pauser secret from the config. The
+pauser is distinct from `ADMIN_ROLE`:
 it can pause but cannot unpause, matching the guardian/quorum separation in
 security-model.md §9. Unpause still requires `ADMIN_ROLE` through the
 timelock.

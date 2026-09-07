@@ -14,6 +14,14 @@
 //! All flags may be provided via environment variables with the prefix `WATCHDOG_`
 //! (e.g. `WATCHDOG_DATABASE_URL`).
 //!
+//! # Pauser key
+//!
+//! The PAUSER_ROLE key comes from `WATCHDOG_PAUSER_KEY_HEX` (preferred for
+//! deployments) or from the config file's `action.pauser_private_key_hex`
+//! literal (local dev). Either way it is consumed once here at startup: the
+//! daemon derives the signing state, drops the raw hex, and threads the derived
+//! state through the poll loop.
+//!
 //! # Startup validation
 //!
 //! The daemon validates the configuration on startup and exits non-zero if any
@@ -75,13 +83,32 @@ async fn main() {
     let args = Args::parse();
 
     // Load and validate configuration — exit 1 on any misconfiguration.
-    let config = match Config::from_file(&args.config) {
+    let mut config = match Config::from_file(&args.config) {
         Ok(c) => c,
         Err(e) => {
             error!("startup: {e}");
             std::process::exit(1);
         }
     };
+
+    // Take the pauser secret out of `Config` exactly once, here at startup, and
+    // keep only the derived signing state for the life of the process. After
+    // this call `config.action.pauser_private_key_hex` is `None`, so nothing in
+    // the poll loop can read the raw key back out of the config. (This bounds
+    // the secret's lifetime in our own long-lived state; it is not a claim that
+    // no copy survives anywhere in process memory — see config.rs.)
+    let pauser = match config.take_pauser_signing_key() {
+        Ok(k) => k,
+        Err(e) => {
+            error!("startup: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Some(signer) = pauser.as_ref() {
+        info!(pauser = %signer.address(), "pauser signing key derived at startup");
+    }
+    // No further mutation: the config is read-only from here on.
+    let config = config;
 
     info!(
         config = ?args.config,
@@ -124,8 +151,15 @@ async fn main() {
     loop {
         match latest_indexed_block(&pool, args.chain_id).await {
             Ok(Some(block_number)) => {
-                match run_cycles_since_cursor(&pool, &config, &client, args.chain_id, block_number)
-                    .await
+                match run_cycles_since_cursor(
+                    &pool,
+                    &config,
+                    &client,
+                    args.chain_id,
+                    block_number,
+                    pauser.as_ref(),
+                )
+                .await
                 {
                     Ok(CycleResult::Ok) => {}
                     Ok(CycleResult::Breached(kinds)) => {
