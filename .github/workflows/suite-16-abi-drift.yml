@@ -17,6 +17,12 @@
 # WHICH FILES ARE DRIFT-GATED
 # - clients/rust-payment-client/abi/Erc20.json
 # - clients/rust-payment-client/abi/RobotMoneyGateway.json
+# - clients/rust-payment-client/abi/VaultRegistry.json          (added #1362)
+# - clients/rust-payment-client/abi/PortfolioRouter.json        (added #1362)
+# - clients/rust-payment-client/abi/RouterGovernance.json       (added #1362)
+# - clients/rust-payment-client/abi/TimelockController.json     (added #1362)
+# - clients/rust-payment-client/abi/InvestmentCommitteePolicy.json (added #1362)
+# - clients/rust-payment-client/abi/ConsensusRecommendationReceipt.json (added #1362)
 # - clients/dapp/src/lib/abi.generated.ts
 #
 # THE OTHER TWO GATES IN THIS JOB (issue #1346)
@@ -24,14 +30,18 @@
 # outside it, both now closed here:
 #
 # 1. UN-GATED BINDING INVENTORY. Seven hand-maintained files under
-#    clients/rust-payment-client/abi/ are not regenerated. The generator's
+#    clients/rust-payment-client/abi/ were not regenerated. The generator's
 #    header used to call them "known schema drift, tracked separately" and name
 #    no issue, so nothing tracked them and nothing noticed when two more files
 #    joined the directory without ever being listed. One of them,
-#    VaultRegistry.json, still carries the stale nine-field getVault the dapp
-#    fixed in #1348. check_abi_binding_inventory.py now requires every binding
-#    on disk to be either drift-gated or recorded against an OPEN tracking
-#    issue (#1362), so an un-gated file can no longer persist untracked.
+#    VaultRegistry.json, carried the stale nine-field getVault the dapp fixed in
+#    #1348 — rmpc could not decode a real registry response at all.
+#    check_abi_binding_inventory.py now requires every binding on disk to be
+#    either drift-gated or recorded against an OPEN tracking issue, so an
+#    un-gated file can no longer persist untracked. #1362 then regenerated six
+#    of the seven and moved them into the diff below. The one still un-gated is
+#    MockVault.json, tracked by #1286 (Q3: should the clients bind to a
+#    compiler-owned IVault.sol instead of a declared test fixture?).
 #
 # 2. SOLIDITY-TRUTH EVENT TOPICS. services/explorer-indexer/src/abi.rs keeps
 #    three hand-maintained copies of every event signature, and its
@@ -114,10 +124,10 @@ jobs:
         run: python3 .github/scripts/check_abi_binding_inventory.py --self-test
 
       # --verify-issues-open resolves each cited tracking issue through `gh` and
-      # fails when it is not OPEN. Closing #1362 without actually bringing the
-      # seven files under the gate therefore turns this suite red, instead of
-      # quietly restoring the "tracked separately" fiction it replaced. The flag
-      # is always passed here: the check must never silently degrade to the
+      # fails when it is not OPEN. Closing the cited issue without actually
+      # bringing the file under the gate therefore turns this suite red, instead
+      # of quietly restoring the "tracked separately" fiction it replaced. The
+      # flag is always passed here: the check must never silently degrade to the
       # offline half just because a token is missing.
       - name: Every ABI binding is drift-gated or cites an open tracking issue
         env:
@@ -159,6 +169,12 @@ jobs:
           if ! git diff --exit-code \
                clients/rust-payment-client/abi/Erc20.json \
                clients/rust-payment-client/abi/RobotMoneyGateway.json \
+               clients/rust-payment-client/abi/VaultRegistry.json \
+               clients/rust-payment-client/abi/PortfolioRouter.json \
+               clients/rust-payment-client/abi/RouterGovernance.json \
+               clients/rust-payment-client/abi/TimelockController.json \
+               clients/rust-payment-client/abi/InvestmentCommitteePolicy.json \
+               clients/rust-payment-client/abi/ConsensusRecommendationReceipt.json \
                clients/dapp/src/lib/abi.generated.ts; then
             echo ""
             echo "ERROR: Generated ABI files differ from committed files."

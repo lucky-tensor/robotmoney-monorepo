@@ -623,14 +623,22 @@ decoded a `VaultRegistry` shape that no longer existed (#1348).
    `gh`), or when a file claimed as drift-gated is not actually named in this
    workflow's `git diff --exit-code`. It replaces a comment that said "known
    schema drift, tracked separately" and named no issue for four files — while
-   two more had joined the directory unlisted. The seven currently un-gated
-   files are tracked by #1362; closing that issue without doing the work turns
-   this suite red. Self-tested (`--self-test`) against seven synthetic defect
-   shapes before the real run.
+   two more had joined the directory unlisted. #1362 then regenerated six of the
+   seven un-gated files from their artifacts and moved them into gate 2. The one
+   still un-gated is `MockVault.json`, tracked by #1286 (Q3: should clients bind
+   to a compiler-owned `IVault.sol` rather than to a declared test fixture?);
+   closing that issue without doing the work turns this suite red. Self-tested
+   (`--self-test`) against seven synthetic defect shapes before the real run.
 2. **Regenerate and diff.** `forge build`, then `generate_abi_bindings.sh`, then
-   `git diff --exit-code` over `Erc20.json`, `RobotMoneyGateway.json` and
-   `abi.generated.ts`. Fix a failure by running those two commands locally and
-   committing the result.
+   `git diff --exit-code` over `Erc20.json`, `RobotMoneyGateway.json`,
+   `VaultRegistry.json`, `PortfolioRouter.json`, `RouterGovernance.json`,
+   `TimelockController.json`, `InvestmentCommitteePolicy.json`,
+   `ConsensusRecommendationReceipt.json` and `abi.generated.ts`. Fix a failure by
+   running those two commands locally and committing the result. The six added by
+   #1362 were hand-trimmed excerpts; one of them, `VaultRegistry.json`, had
+   drifted to a `getVault` shape no deployed contract returns, so `rmpc
+   get-vaults` and `rmpc get-vault` could not decode a real registry response —
+   the rmpc half of #1348.
 3. **Indexer topic-0 cross-check**
    (`cargo test -p explorer-indexer --lib -- abi::tests::event_topics_match_foundry_artifacts`,
    issue #1346). Re-derives 27 event topic-0 hashes from the `out/` artifacts

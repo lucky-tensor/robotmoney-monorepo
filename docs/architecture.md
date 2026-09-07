@@ -793,10 +793,18 @@ if a future ADR adds that path.
 **Protocol-scope reads** (no address argument required):
 
 - `get-vaults` — vault registry: all registered vaults, their name,
-  risk label, mandate, status (active/paused/retired), TVL, caps, exit
-  fee, and receipt token address.
-- `get-vault <address>` — single vault: all of the above plus adapter
-  breakdown (address, balance, cap, active flag) and rebalance state.
+  underlying asset, registration timestamp, status
+  (active/paused/retired), and TVL. Risk label, mandate, caps, exit fee
+  and receipt token address are **not** registry state — the shipped
+  `VaultRegistry.sol` (#329) stores only `VaultMetadata { name, asset,
+  registeredAt }` plus a status, and the read shape that promised the rest
+  was removed from the dapp in #1348 and from rmpc in #1362. Caps and exit
+  fees are live reads on the vault contract itself; the receipt token is
+  always the vault address.
+- `get-vault <address>` — single vault: all of the above plus live
+  ERC-4626 accounting (total assets, total supply, share price,
+  decimals), adapter breakdown (address, balance, cap, active flag) and
+  rebalance state.
 - `get-router` — Portfolio Router: active vault addresses, current
   weight bps per vault, pending governance proposal if any, and router
   cap.

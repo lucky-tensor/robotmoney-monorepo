@@ -151,6 +151,18 @@ Four questions must be resolved before any implementation issue starts:
 
 ### 3.4 Minimum stable read ABI
 
+> **SUPERSEDED BY THE SHIPPED CONTRACT — do not bind a client to the `getVault`
+> shape below.** `VaultRegistry.sol` as implemented in #329 returns **two**
+> top-level outputs, `(VaultMetadata metadata, VaultStatus status)`, where
+> `VaultMetadata` is `{ string name; address asset; uint256 registeredAt; }`.
+> The nine-field `VaultRecord` in this section was never implemented: there is
+> no on-chain `riskLabel`, `mandate`, `receiptToken`, `depositCap` or
+> `exitFeeBps` anywhere in the registry. Clients that copied it could not decode
+> a real response — the dapp's copy was fixed in #1348 and rmpc's in #1362.
+> `listVaults()` and `vaultCount()` below are accurate as written. The rest of
+> this section is kept as the historical record of the decision, not as a
+> contract.
+
 The following three view functions constitute the stable read surface for `rmpc`,
 the Portfolio Router, the explorer indexer, and the dapp protocol layer. These
 signatures must not be modified without a superseding ADR.
