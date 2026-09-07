@@ -30,8 +30,18 @@ const BUILD_ENV = {
   VITE_FAUCET_HARNESS_PRIVATE_KEY: `0x${"a".repeat(64)}`,
 } as const;
 
+/** Headers stub exposing only the `get` the loader uses. */
+function headers(contentType: string | null) {
+  return { get: (name: string) => (name.toLowerCase() === "content-type" ? contentType : null) };
+}
+
 /** A fetch that returns one canned response, recording what it was asked for. */
-function stubFetch(response: { ok?: boolean; status?: number; json?: () => Promise<unknown> }): {
+function stubFetch(response: {
+  ok?: boolean;
+  status?: number;
+  contentType?: string | null;
+  json?: () => Promise<unknown>;
+}): {
   fetchImpl: ConfigFetchLike;
   calls: string[];
 } {
@@ -41,6 +51,9 @@ function stubFetch(response: { ok?: boolean; status?: number; json?: () => Promi
     return Promise.resolve({
       ok: response.ok ?? true,
       status: response.status ?? 200,
+      headers: headers(
+        response.contentType === undefined ? "application/json" : response.contentType,
+      ),
       json: response.json ?? (() => Promise.resolve({})),
     });
   };
@@ -100,7 +113,12 @@ describe("loadRuntimeConfig — served and valid", () => {
     const seen: (RequestCache | undefined)[] = [];
     const fetchImpl: ConfigFetchLike = (_input, init) => {
       seen.push(init?.cache);
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: headers("application/json"),
+        json: () => Promise.resolve({}),
+      });
     };
 
     await loadRuntimeConfig({ fetchImpl, buildEnv: BUILD_ENV });
@@ -110,6 +128,38 @@ describe("loadRuntimeConfig — served and valid", () => {
 });
 
 describe("loadRuntimeConfig — document absent", () => {
+  // `vite preview` — how the dapp image serves the bundle — answers a missing
+  // /config.json with the SPA fallback: index.html, HTTP 200, text/html. If
+  // that were treated as a malformed config, every deployment without a
+  // runtime config document would render the error panel instead of the app.
+  it("falls back to the build-time env when the server returns the SPA fallback", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { fetchImpl } = stubFetch({
+      ok: true,
+      status: 200,
+      contentType: "text/html",
+      json: () => Promise.reject(new Error("Unexpected token < in JSON at position 0")),
+    });
+
+    const { config, source } = await loadRuntimeConfig({ fetchImpl, buildEnv: BUILD_ENV });
+
+    expect(source).toBe("build-time");
+    expect(config).toEqual(BUILD_ENV);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("accepts a charset-qualified JSON content type as a real config document", async () => {
+    const { fetchImpl } = stubFetch({
+      contentType: "application/json; charset=utf-8",
+      json: () => Promise.resolve({ VITE_ENV_CLASS: "devnet" }),
+    });
+
+    const { config, source } = await loadRuntimeConfig({ fetchImpl, buildEnv: BUILD_ENV });
+
+    expect(source).toBe("fetched");
+    expect(config.VITE_ENV_CLASS).toBe("devnet");
+  });
+
   it("falls back to the build-time env on 404", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { fetchImpl } = stubFetch({ ok: false, status: 404 });

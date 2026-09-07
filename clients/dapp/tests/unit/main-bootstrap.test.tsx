@@ -18,6 +18,8 @@ import {
 } from "../../src/bootstrap";
 import type { ConfigFetchLike, RuntimeConfig } from "../../src/lib/runtimeConfig";
 
+const jsonHeaders = { get: () => "application/json" };
+
 const BUILD_ENV: RuntimeConfig = {
   VITE_GATEWAY_ADDRESS: "0x1111111111111111111111111111111111111111",
   VITE_ENV_CLASS: "fork",
@@ -92,7 +94,12 @@ describe("bootstrapDapp — loading then render", () => {
     const fetchImpl: ConfigFetchLike = () =>
       new Promise((resolve) => {
         release = (payload) =>
-          resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
+          resolve({
+            ok: true,
+            status: 200,
+            headers: jsonHeaders,
+            json: () => Promise.resolve(payload),
+          });
       });
 
     const { container, root } = mount();
@@ -122,7 +129,12 @@ describe("bootstrapDapp — loading then render", () => {
 
   it("hands the app the fetched addresses, not the build-time ones", async () => {
     const fetchImpl: ConfigFetchLike = () =>
-      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(FETCHED) });
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: jsonHeaders,
+        json: () => Promise.resolve(FETCHED),
+      });
 
     const { root } = mount();
     await act(async () => {
@@ -143,7 +155,12 @@ describe("bootstrapDapp — loading then render", () => {
   it("renders the app from the build-time env when no config document is deployed", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const fetchImpl: ConfigFetchLike = () =>
-      Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: jsonHeaders,
+        json: () => Promise.resolve({}),
+      });
 
     const { container, root } = mount();
     let source: unknown;
@@ -160,7 +177,12 @@ describe("bootstrapDapp — loading then render", () => {
 describe("bootstrapDapp — visible failure", () => {
   it("renders an error panel instead of the app when the config fetch fails", async () => {
     const fetchImpl: ConfigFetchLike = () =>
-      Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        headers: jsonHeaders,
+        json: () => Promise.resolve({}),
+      });
 
     const { container, root } = mount();
     let source: unknown = "unset";
@@ -181,7 +203,12 @@ describe("bootstrapDapp — visible failure", () => {
 
   it("renders an error panel when the config document is malformed", async () => {
     const fetchImpl: ConfigFetchLike = () =>
-      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve("not-an-object") });
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: jsonHeaders,
+        json: () => Promise.resolve("not-an-object"),
+      });
 
     const { container, root } = mount();
     await act(async () => {

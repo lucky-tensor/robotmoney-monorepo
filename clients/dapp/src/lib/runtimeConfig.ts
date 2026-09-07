@@ -22,7 +22,10 @@
  * The build-time env map remains the *base* layer; the fetched document is
  * an overlay on top of it. That keeps `bun run dev`, `vite preview`, and the
  * existing smoke-test images working unchanged when no `/config.json` is
- * served (HTTP 404 → fall back to the build-time values).
+ * served. "Not served" is detected by content type rather than by status:
+ * `vite preview` answers a missing path with the SPA fallback (index.html,
+ * HTTP 200), so a non-JSON response — not just a 404 — means "absent" and
+ * falls back to the build-time values.
  *
  * ## Security — why the overlay is a strict allowlist
  *
@@ -102,7 +105,27 @@ export interface LoadedRuntimeConfig {
 export type ConfigFetchLike = (
   input: string,
   init?: { cache?: RequestCache },
-) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  headers: { get: (name: string) => string | null };
+  json: () => Promise<unknown>;
+}>;
+
+/**
+ * Whether a response actually carries JSON.
+ *
+ * This is not pedantry. `vite preview` — how the dapp image serves the built
+ * bundle — answers a request for a file it does not have with the SPA
+ * fallback: `index.html`, HTTP **200**, `content-type: text/html`. A missing
+ * `/config.json` therefore does *not* arrive as a 404, and treating that HTML
+ * body as a malformed config would put the error panel in front of every
+ * deployment that has no runtime config. The content type is what separates
+ * "no config document here" from "a config document that is broken".
+ */
+function isJsonResponse(contentType: string | null): boolean {
+  return /^application\/([\w.-]+\+)?json\b/i.test((contentType ?? "").trim());
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -166,13 +189,16 @@ export function parseRuntimeConfig(payload: unknown): RuntimeConfig {
  * Fetch `/config.json` and overlay it on the build-time env map.
  *
  * Outcomes:
- *   - 2xx with a valid object → `source: "fetched"`, overlay applied.
- *   - 404 → `source: "build-time"`. No config document is deployed (local
- *     `bun run dev`, `vite preview`, existing single-environment images);
- *     the build-time values stand, exactly as they did before this module.
- *   - any other non-2xx, unreadable JSON, or a payload that fails
- *     `parseRuntimeConfig` → throws `RuntimeConfigError`, so the bootstrap
- *     can render a visible error instead of a blank or half-configured page.
+ *   - 2xx JSON with a valid object → `source: "fetched"`, overlay applied.
+ *   - 404, or a 2xx response that is not JSON → `source: "build-time"`. No
+ *     config document is deployed (local `bun run dev`, `vite preview`,
+ *     existing single-environment images); the build-time values stand,
+ *     exactly as they did before this module. See `isJsonResponse` for why
+ *     a non-JSON 200 is the common shape of "absent" rather than a 404.
+ *   - any other non-2xx, unreadable JSON *that claimed to be JSON*, or a
+ *     payload that fails `parseRuntimeConfig` → throws `RuntimeConfigError`,
+ *     so the bootstrap can render a visible error instead of a blank or
+ *     half-configured page.
  *   - a rejected fetch (network/CORS) → throws `RuntimeConfigError`. The
  *     document is same-origin, so a transport failure means the deployment
  *     is broken, not that the config is absent.
@@ -193,16 +219,22 @@ export async function loadRuntimeConfig(args: {
     );
   }
 
-  if (response.status === 404) {
+  const absent = () => {
     console.warn(
       `${url} is not served by this deployment — falling back to the build-time environment.`,
     );
-    return { config: args.buildEnv, source: "build-time" };
-  }
+    return { config: args.buildEnv, source: "build-time" as const };
+  };
+
+  if (response.status === 404) return absent();
 
   if (!response.ok) {
     throw new RuntimeConfigError(`Could not fetch ${url}: HTTP ${response.status}.`);
   }
+
+  // A 200 that is not JSON means the server answered with something other than
+  // a config document — in practice the SPA fallback. Absent, not broken.
+  if (!isJsonResponse(response.headers.get("content-type"))) return absent();
 
   let payload: unknown;
   try {

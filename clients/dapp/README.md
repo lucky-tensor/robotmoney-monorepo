@@ -51,8 +51,10 @@ Build-time `VITE_*` variables are the base layer. At startup the dapp fetches
 (contract addresses, `VITE_ENV_CLASS`, `VITE_DEVNET_RPC_URL`,
 `VITE_EXPLORER_API_URL`) on top, so one image serves several environments
 without a rebuild — see `src/lib/runtimeConfig.ts` and `src/bootstrap.tsx`.
-A 404 for that document means "no runtime config deployed" and the build-time
-values stand; any other failure renders a visible error instead of a
+A 404 — or any non-JSON response, which is what `vite preview` returns for a
+missing path via its SPA fallback — means "no runtime config deployed" and the
+build-time values stand. Any other failure (a bad status, an unparseable JSON
+document, a non-object payload) renders a visible error instead of a
 half-configured app.
 
 `VITE_FAUCET_HARNESS_PRIVATE_KEY` and `VITE_HISTORY_PANE` are deliberately
