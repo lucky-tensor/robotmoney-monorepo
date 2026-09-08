@@ -461,35 +461,86 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
         // in the vault at this point), so it already accounts for `amount`. Do NOT add `amount`
         // again — that would double-count it.
         uint256 totalAfter = totalAssets();
-        uint256 targetBps = _targetBpsFor();
+        uint256 activeCount = _activeAdapterCount();
         uint256 remaining = amount;
         uint256 len = adapters.length;
+
+        // Pass-1 `totalAssets()` reads, held as `balance + 1` so 0 means "not read"
+        // without shadowing a genuine zero balance. Reused by pass 2 ONLY when
+        // pass 1 allocated nothing at all (`remaining == amount` below): in that
+        // case nothing but staticcalls happened in between, so the cached reads
+        // are exact by construction. The moment pass 1 allocates, every later
+        // read is taken fresh — a cached value would be a MODELLED balance, and
+        // pass 2's `capBps` headroom check must never be computed from one.
+        uint256[] memory cachedBalance = new uint256[](len);
+
+        // Rank of the current adapter among the active ones, in registry order.
+        uint256 rank;
+
+        // Absolute `capBps` headroom pass 1 leaves behind, summed over the
+        // adapters it visited. Pass 2 has nothing to do when this is zero.
+        uint256 capHeadroom;
 
         // Pass 1: fill toward min(equal target, capBps)
         for (uint256 i = 0; i < len && remaining > 0; i++) {
             if (!adapters[i].active) continue;
+            uint256 shareBalance = _equalWeightBalance(totalAfter, rank, activeCount);
+            rank++;
             // Skip adapters whose allowlist / codehash eligibility was revoked while
             // still active in the registry — depositing must not brick when governance
             // quarantines one adapter (audit 2026-06-09, L-4). `addAdapter` and
             // `adminRebalance` keep the hard `_requireAdapterEligible` revert.
             if (!_isAdapterEligible(address(adapters[i].adapter))) continue;
-            uint256 effectiveTarget =
-                adapters[i].capBps < targetBps ? adapters[i].capBps : targetBps;
+            // Still `min(cap, equal target)`, taken on the balances the two bps
+            // figures denote so the equal-weight slice keeps its exact partition
+            // of NAV. `capBalance` is the same expression pass 2 uses, so an
+            // adapter can never be filled past its cap here.
+            uint256 capBalance = (totalAfter * adapters[i].capBps) / MAX_BPS;
+            uint256 targetBalance = shareBalance < capBalance ? shareBalance : capBalance;
             uint256 currentBalance = adapters[i].adapter.totalAssets();
-            uint256 targetBalance = (totalAfter * effectiveTarget) / MAX_BPS;
-            if (currentBalance >= targetBalance) continue;
+            if (currentBalance >= targetBalance) {
+                cachedBalance[i] = currentBalance + 1;
+                if (capBalance > currentBalance) capHeadroom += capBalance - currentBalance;
+                continue;
+            }
             uint256 deficit = targetBalance - currentBalance;
             uint256 allocation = deficit < remaining ? deficit : remaining;
             _allocateTo(i, allocation);
             remaining -= allocation;
+            uint256 filled = currentBalance + allocation;
+            if (capBalance > filled) capHeadroom += capBalance - filled;
         }
 
-        // Pass 2: spread leftover into adapters with absolute cap headroom
-        if (remaining > 0) {
+        // slither-disable-next-line incorrect-equality
+        // Justification: `remaining == amount` asks whether pass 1 allocated
+        // anything at all — both are local accumulators, not balances an
+        // attacker can nudge, and the guard only ever makes pass 2 read MORE.
+        bool passOneAllocatedNothing = remaining == amount;
+
+        // Pass 2: spread leftover into adapters with absolute cap headroom.
+        //
+        // `capHeadroom == 0` means pass 1 already saw every eligible adapter at
+        // its `capBps` share, so pass 2 could only re-read them and skip. That is
+        // not a corner case: a cap set that sums to exactly `MAX_BPS` (the devnet
+        // 3334/3333/3333) floors to slightly LESS than NAV, so a few wei of every
+        // deposit are permanently unplaceable — and re-reading every adapter to
+        // rediscover that was the second round of `totalAssets()` calls #1391 is
+        // about. Skipping pass 2 here leaves exactly the USDC pass 2 would have
+        // left, and still emits `UnroutedDeposit`.
+        //
+        // `capHeadroom` models an allocated adapter's new balance as
+        // `currentBalance + allocation`, exact for the 1:1 lending adapters this
+        // vault family routes to (`deploy` moves USDC at par, with no min-out
+        // leg). It only ever gates whether pass 2 is ATTEMPTED — pass 2 re-reads
+        // and re-checks `capBps` against a real balance before placing anything,
+        // so an inexact model can never widen a cap, only leave USDC idle.
+        if (remaining > 0 && capHeadroom > 0) {
             for (uint256 i = 0; i < len && remaining > 0; i++) {
                 if (!adapters[i].active) continue;
                 if (!_isAdapterEligible(address(adapters[i].adapter))) continue;
-                uint256 currentBalance = adapters[i].adapter.totalAssets();
+                uint256 cached = passOneAllocatedNothing ? cachedBalance[i] : 0;
+                uint256 currentBalance =
+                    cached == 0 ? adapters[i].adapter.totalAssets() : cached - 1;
                 uint256 capBalance = (totalAfter * adapters[i].capBps) / MAX_BPS;
                 if (currentBalance >= capBalance) continue;
                 uint256 headroom = capBalance - currentBalance;
@@ -803,17 +854,21 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
 
         lastRebalanceAt = block.timestamp;
 
-        uint256 targetBps = MAX_BPS / activeCount;
         uint256 totalAssetsCached = totalAssets();
         uint256 maxMovePerCall = (totalAssetsCached * maxRebalanceBpsPerCall) / MAX_BPS;
         uint256 totalMoved;
+        uint256 rank;
 
         uint256 len = adapters.length;
         for (uint256 i = 0; i < len; i++) {
             if (!adapters[i].active) continue;
             if (totalMoved >= maxMovePerCall) break;
+            // Same exactly-partitioning target set the allocator uses (#1391), so
+            // a rebalance does not pull dust that `_routeDeposit` hands straight
+            // back on the `_routeDeposit(idle)` leg below.
+            uint256 targetBalance = _equalWeightBalance(totalAssetsCached, rank, activeCount);
+            rank++;
             uint256 currentBalance = adapters[i].adapter.totalAssets();
-            uint256 targetBalance = (totalAssetsCached * targetBps) / MAX_BPS;
             if (currentBalance <= targetBalance) continue;
             uint256 excess = currentBalance - targetBalance;
             uint256 pull =
@@ -1199,9 +1254,67 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
         }
     }
 
-    function _targetBpsFor() internal view returns (uint256) {
-        uint256 active = _activeAdapterCount();
-        return active == 0 ? 0 : MAX_BPS / active;
+    /// @dev Share of `MAX_BPS` owed to the `rank`-th (0-based, registry order) of
+    ///      `active` equally-weighted adapters.
+    ///
+    ///      `MAX_BPS / active` on its own FLOORS: with three active adapters it
+    ///      is 3333, so the per-adapter targets summed to 9999 bps and never to
+    ///      100 %. Pass 1 of `_routeDeposit` could therefore never place the last
+    ///      bps of NAV into a balanced, fully-deployed vault — `remaining` stayed
+    ///      positive and pass 2 ran on EVERY deposit, re-reading every adapter's
+    ///      `totalAssets()` (issue #1391). The `MAX_BPS % active` leftover bps are
+    ///      handed out one each to the lowest ranks, so the target set sums to
+    ///      exactly `MAX_BPS`.
+    ///
+    ///      Callers still take `min(capBps, targetBps)`, so a distributed bps can
+    ///      never lift an adapter above its own cap.
+    function _equalWeightBps(uint256 rank, uint256 active) internal pure returns (uint256) {
+        if (active == 0) return 0;
+        return MAX_BPS / active + (rank < MAX_BPS % active ? 1 : 0);
+    }
+
+    /// @dev The `rank`-th active adapter's slice of `total` when `active`
+    ///      adapters split it equally — the balance `_equalWeightBps` denotes.
+    ///
+    ///      Computed as the DIFFERENCE OF TWO PREFIX SHARES rather than as
+    ///      `total * bps / MAX_BPS`, so the slices partition `total` exactly.
+    ///      Distributing the remainder bps is necessary but not sufficient:
+    ///      flooring each `total * bps / MAX_BPS` independently still loses up to
+    ///      `active - 1` wei, and on the real devnet composition that dust alone
+    ///      kept `remaining > 0` and dragged pass 2 — and its second round of
+    ///      `totalAssets()` reads — into every deposit (issue #1391).
+    ///
+    ///      Because the slices sum to `total` while the adapters hold
+    ///      `total - idle`, pass 1's deficits always sum to at least the deposit,
+    ///      so pass 1 can place all of it whenever no `capBps` binds.
+    function _equalWeightBalance(uint256 total, uint256 rank, uint256 active)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (active == 0) return 0;
+        uint256 base = MAX_BPS / active;
+        uint256 extra = MAX_BPS % active;
+        uint256 cumBefore = base * rank + (rank < extra ? rank : extra);
+        uint256 cumAfter = cumBefore + base + (rank < extra ? 1 : 0);
+        return (total * cumAfter) / MAX_BPS - (total * cumBefore) / MAX_BPS;
+    }
+
+    /// @dev Equal-weight target in bps for the adapter at registry `index`, or 0
+    ///      when it is inactive. The one definition every consumer shares — the
+    ///      allocator, `rebalance()` and the drift views — so the target set can
+    ///      never drift out of summing to `MAX_BPS` in one place but not another.
+    function _targetBpsForIndex(uint256 index) internal view returns (uint256) {
+        if (index >= adapters.length || !adapters[index].active) return 0;
+        uint256 len = adapters.length;
+        uint256 active;
+        uint256 rank;
+        for (uint256 i = 0; i < len; i++) {
+            if (!adapters[i].active) continue;
+            if (i < index) rank++;
+            active++;
+        }
+        return _equalWeightBps(rank, active);
     }
 
     function _activeAdapterCount() internal view returns (uint256) {
@@ -1255,7 +1368,7 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
             info.capBps,
             info.active,
             info.adapter.totalAssets(),
-            info.active ? _targetBpsFor() : 0
+            _targetBpsForIndex(index)
         );
     }
 
@@ -1278,12 +1391,14 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
         drifts = new int256[](len);
 
         uint256 total = totalAssets();
-        uint256 targetBps = _targetBpsFor();
+        uint256 activeCount = _activeAdapterCount();
+        uint256 rank;
 
         for (uint256 i = 0; i < len; i++) {
             if (!adapters[i].active) continue;
+            targetBalances[i] = _equalWeightBalance(total, rank, activeCount);
+            rank++;
             currentBalances[i] = adapters[i].adapter.totalAssets();
-            targetBalances[i] = (total * targetBps) / MAX_BPS;
             drifts[i] = int256(currentBalances[i]) - int256(targetBalances[i]);
         }
     }
@@ -1304,7 +1419,14 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
     }
 
     /// @notice Equal-weight target allocation per active adapter in basis points.
+    /// @dev    The FLOORED base share, `MAX_BPS / activeAdapterCount()`. It is a
+    ///         single scalar and so cannot carry the `MAX_BPS % active` remainder
+    ///         bps the allocator distributes to the lowest-indexed active
+    ///         adapters (#1391) — for the exact per-adapter target read
+    ///         `getAdapterInfo(index)` or `getAdapterDrift()`, whose targets sum
+    ///         to the whole NAV.
     function currentTargetBps() external view returns (uint256) {
-        return _targetBpsFor();
+        uint256 active = _activeAdapterCount();
+        return active == 0 ? 0 : MAX_BPS / active;
     }
 }

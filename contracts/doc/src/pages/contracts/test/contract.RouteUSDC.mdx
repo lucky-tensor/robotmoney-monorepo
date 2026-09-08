@@ -1,0 +1,65 @@
+---
+title: "RouteUSDC"
+---
+
+# RouteUSDC
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/7ad48f9065de8dddbe6591f3819711a68aaed6b6/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
+
+**Inherits:** ERC20
+
+## Functions
+
+<a id="constructor"></a>
+
+### constructor
+
+```solidity
+constructor() ERC20("USD Coin", "USDC");
+```
+
+<a id="decimals"></a>
+
+### decimals
+
+<i>
+
+Returns the number of decimals used to get its user representation.
+For example, if `decimals` equals `2`, a balance of `505` tokens should
+be displayed to a user as `5.05` (`505 / 10 ** 2`).
+
+Tokens usually opt for a value of 18, imitating the relationship between
+Ether and Wei. This is the default value returned by this function, unless
+it's overridden.
+
+NOTE: This information is only used for _display_ purposes: it in
+no way affects any of the arithmetic of the contract, including
+`IERC20` and `IERC20`.
+
+</i>
+
+```solidity
+function decimals() public pure override returns (uint8);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint8` |  |
+
+<a id="mint-address-uint256"></a>
+
+### mint
+
+```solidity
+function mint(address to, uint256 amount) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| to | `address` |  |
+| amount | `uint256` |  |
+

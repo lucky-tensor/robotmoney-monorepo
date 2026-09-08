@@ -1,0 +1,64 @@
+---
+title: "RouteHarness"
+---
+
+# RouteHarness
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/7ad48f9065de8dddbe6591f3819711a68aaed6b6/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
+
+**Inherits:** [RobotMoneyVault](/contracts/contract.RobotMoneyVault)
+
+<i>
+
+Exposes the allocator on its own so a test can count the adapter reads
+`_routeDeposit` makes, without the surrounding `deposit()` NAV reads.
+
+</i>
+
+## Functions
+
+<a id="constructor-ierc20-uint256-uint256-address-address"></a>
+
+### constructor
+
+```solidity
+constructor(
+        IERC20 asset_,
+        uint256 tvlCap_,
+        uint256 perDepositCap_,
+        address feeRecipient_,
+        address admin_
+    ) RobotMoneyVault(asset_, tvlCap_, perDepositCap_, 0, feeRecipient_, admin_, admin_);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| asset_ | `IERC20` |  |
+| tvlCap_ | `uint256` |  |
+| perDepositCap_ | `uint256` |  |
+| feeRecipient_ | `address` |  |
+| admin_ | `address` |  |
+
+<a id="exposed_routedeposit-uint256"></a>
+
+### exposed_routeDeposit
+
+<i>
+
+Call with `amount` USDC ALREADY transferred into the vault — exactly
+the state `_deposit` hands `_routeDeposit`.
+
+</i>
+
+```solidity
+function exposed_routeDeposit(uint256 amount) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| amount | `uint256` |  |
+

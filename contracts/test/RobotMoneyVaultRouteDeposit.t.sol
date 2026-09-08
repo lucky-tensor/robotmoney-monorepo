@@ -163,9 +163,8 @@ contract RobotMoneyVaultRouteDepositTest is Test {
 
     function setUp() public {
         usdc = new RouteUSDC();
-        vault = new RouteHarness(
-            IERC20(address(usdc)), TVL_CAP, PER_DEPOSIT_CAP, feeRecipient, admin
-        );
+        vault =
+            new RouteHarness(IERC20(address(usdc)), TVL_CAP, PER_DEPOSIT_CAP, feeRecipient, admin);
 
         for (uint256 i = 0; i < 3; i++) {
             adapters[i] = new ReadCountingAdapter(address(usdc), address(vault));
@@ -206,6 +205,27 @@ contract RobotMoneyVaultRouteDepositTest is Test {
         usdc.transfer(address(vault), amount);
         vm.record();
         vault.exposed_routeDeposit(amount);
+    }
+
+    /// @dev Reproduce the committed devnet fork fixture exactly: NAV
+    ///      1 050 131 553 held as 350 098 606 / 350 033 503 / 349 999 444 with no
+    ///      idle USDC (PR #1394's measurements). Shares are minted by a token
+    ///      deposit first, then each adapter is topped up by direct transfer so
+    ///      the composition does not depend on how routing happens to split it.
+    function _seedDevnetForkFixtureComposition() internal {
+        uint256[3] memory fixtureBalances =
+            [uint256(350_098_606), uint256(350_033_503), uint256(349_999_444)];
+
+        vm.prank(alice);
+        vault.deposit(3 * ONE_USDC, alice);
+        for (uint256 i = 0; i < 3; i++) {
+            uint256 held = usdc.balanceOf(address(adapters[i]));
+            assertLe(held, fixtureBalances[i], "bootstrap overshot the fixture balance");
+            vm.prank(alice);
+            usdc.transfer(address(adapters[i]), fixtureBalances[i] - held);
+        }
+        assertEq(usdc.balanceOf(address(vault)), 0, "fixture setup left idle USDC");
+        assertEq(vault.totalAssets(), 1_050_131_553, "fixture NAV mismatch");
     }
 
     function _adapterBalances() internal view returns (uint256[3] memory bals) {
@@ -313,6 +333,33 @@ contract RobotMoneyVaultRouteDepositTest is Test {
         assertEq(usdc.balanceOf(address(vault)), 0, "dust deposit left idle USDC");
     }
 
+    /// @notice The exact devnet fork-fixture composition the out-of-gas failure
+    ///         was traced on (PR #1394): NAV 1 050 131 554 with the three
+    ///         adapters at 350 098 606 / 350 033 503 / 349 999 444 and the
+    ///         `Deploy.s.sol` cap set, taking the same 5 USDC deposit.
+    /// @dev The trace's starving frame was the SECOND `totalAssets()` on the
+    ///      Morpho adapter (registry index 2), i.e. pass 2 walked all the way to
+    ///      the end of the registry. This pins that pass 2 no longer runs at all.
+    function test_routeDeposit_devnetForkFixtureComposition_readsOnce() public {
+        _seedDevnetForkFixtureComposition();
+
+        _routeAlone(5 * ONE_USDC);
+
+        for (uint256 i = 0; i < 3; i++) {
+            assertEq(
+                _reads(address(adapters[i])),
+                READS_PER_ADAPTER_ONE_ROUND,
+                "pass 2 ran on the devnet fixture composition"
+            );
+        }
+
+        // The devnet cap set sums to exactly MAX_BPS, so the three floored cap
+        // balances add up to a couple of wei LESS than NAV. Those wei are
+        // unplaceable by construction — the pre-fix implementation left the same
+        // 2 wei idle after walking every adapter a second time to discover it.
+        assertLe(usdc.balanceOf(address(vault)), 2, "fixture deposit left more than cap dust");
+    }
+
     // ─── Invariants the fix must preserve ────────────────────────────────────
 
     /// @notice The per-adapter equal-weight targets sum to the whole NAV. Before
@@ -393,24 +440,88 @@ contract RobotMoneyVaultRouteDepositTest is Test {
         assertEq(usdc.balanceOf(address(vault)), 0, "capped routing left idle USDC");
     }
 
-    /// @notice When pass 2 does have to run, an adapter that pass 1 SKIPPED is
-    ///         not re-read: no allocation touched it, so its balance cannot have
-    ///         moved and the pass-1 read is reused (#1391 caching remedy).
-    function test_routeDeposit_passTwoReusesReadsForAdaptersPassOneSkipped() public {
+    /// @notice When pass 1 allocates NOTHING and pass 2 still has to run, pass 2
+    ///         reuses pass 1's reads instead of paying for a second round: only
+    ///         staticcalls happened in between, so the cached values are exact
+    ///         (#1391 caching remedy).
+    ///
+    /// @dev The rounding fix alone does not reach this state — it needs adapters
+    ///      sitting ABOVE their effective target, which is what accrued interest
+    ///      against a binding `capBps` produces. Modelled here by tight caps plus
+    ///      a direct transfer into the adapters (the protocol-donation path).
+    function test_routeDeposit_passTwoReusesPassOneReadsWhenPassOnePlacesNothing() public {
         vm.startPrank(admin);
-        vault.setAdapterCap(0, 10_000);
-        vault.setAdapterCap(2, 100);
+        vault.setAdapterCap(0, 2_000);
+        vault.setAdapterCap(1, 2_000);
+        vault.setAdapterCap(2, 10_000);
         vm.stopPrank();
 
-        // Fill adapter 2 to its 1% cap and leave the vault fully deployed, so a
-        // follow-up deposit makes pass 1 skip it while `remaining` is still > 0.
         vm.prank(alice);
         vault.deposit(3_000 * ONE_USDC, alice);
         assertEq(usdc.balanceOf(address(vault)), 0, "setup left idle USDC");
 
+        // Push the two capped adapters above their cap share of NAV, the way
+        // accrued interest does between deposits.
+        vm.startPrank(alice);
+        usdc.transfer(address(adapters[0]), 200 * ONE_USDC);
+        usdc.transfer(address(adapters[1]), 200 * ONE_USDC);
+        vm.stopPrank();
+
+        vm.recordLogs();
+        _routeAlone(5 * ONE_USDC);
+
+        // Pass 1 must have placed nothing, or this is not the case under test.
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 allocations;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter == address(vault) && logs[i].topics[0] == Allocated.selector) {
+                allocations++;
+            }
+        }
+        assertEq(allocations, 1, "expected exactly the pass-2 allocation");
+        assertEq(usdc.balanceOf(address(vault)), 0, "pass 2 did not place the deposit");
+
+        for (uint256 i = 0; i < 3; i++) {
+            assertEq(
+                _reads(address(adapters[i])),
+                READS_PER_ADAPTER_ONE_ROUND,
+                "pass 2 re-read an adapter instead of reusing pass 1's read"
+            );
+        }
+    }
+
+    /// @notice The cache is NOT used once pass 1 has allocated: a cached balance
+    ///         would then be a modelled value, and pass 2's `capBps` headroom
+    ///         check must only ever be computed from a real read.
+    function test_routeDeposit_passTwoRereadsAfterPassOneAllocated() public {
+        // A binding middle cap is what makes pass 2 run at all once the targets
+        // sum to MAX_BPS: pass 1's deficits then no longer cover the deposit.
+        vm.startPrank(admin);
+        vault.setAdapterCap(0, 10_000);
+        vault.setAdapterCap(1, 1_000);
+        vault.setAdapterCap(2, 10_000);
+        vm.stopPrank();
+
+        vm.prank(alice);
+        vault.deposit(3_000 * ONE_USDC, alice);
+        assertEq(usdc.balanceOf(address(vault)), 0, "setup left idle USDC");
+
+        // Adapter 0 absorbed the capped adapter's share in pass 2 above, so it
+        // now sits over its equal-weight target and pass 1 will skip it — while
+        // adapters 1 and 2 still take allocations.
         _routeAlone(500 * ONE_USDC);
 
-        assertEq(_reads(address(adapters[2])), 1, "adapter pass 1 skipped was re-read by pass 2");
+        assertEq(
+            _reads(address(adapters[0])),
+            READS_PER_ADAPTER_ONE_ROUND + 1,
+            "pass 2 reused a cached read after pass 1 allocated"
+        );
+        uint256 total = vault.totalAssets();
+        assertLe(
+            usdc.balanceOf(address(adapters[1])),
+            (total * 1_000) / MAX_BPS,
+            "capped adapter above its capBps"
+        );
     }
 
     // ─── Recorded gas for the ordinary balanced-vault deposit path ───────────
@@ -454,5 +565,32 @@ contract RobotMoneyVaultRouteDepositTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
 
         console2.log("balanced-vault deposit gas (adapter reads priced at 201145)", gasUsed);
+    }
+
+    /// @notice Not an assertion — the headline number for #1391: the 5 USDC
+    ///         deposit into the EXACT devnet fork-fixture composition, with each
+    ///         adapter read priced at the 201 145 gas `MetaMorpho.totalAssets()`
+    ///         measures. This is the composition whose pass-2 Morpho read starved
+    ///         under EIP-150 and produced the dapp-e2e out-of-gas.
+    function test_gas_devnetForkFixtureDeposit_realisticAdapterReadCost() public {
+        _seedDevnetForkFixtureComposition();
+
+        for (uint256 i = 0; i < 3; i++) {
+            adapters[i].setReadCostGas(METAMORPHO_TOTAL_ASSETS_GAS);
+        }
+
+        vm.prank(alice);
+        vm.record();
+        uint256 gasBefore = gasleft();
+        vault.deposit(5 * ONE_USDC, alice);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        uint256 reads;
+        for (uint256 i = 0; i < 3; i++) {
+            reads += _reads(address(adapters[i]));
+        }
+
+        console2.log("devnet-fixture deposit gas (reads priced at 201145)", gasUsed);
+        console2.log("devnet-fixture deposit adapter totalAssets() reads", reads);
     }
 }
