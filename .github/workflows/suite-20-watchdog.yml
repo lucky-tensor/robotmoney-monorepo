@@ -27,11 +27,25 @@
 name: watchdog-rate-monitor
 
 on:
-  # LIGHT tier: runs on pull_requests to any branch and on push to dev/dev-phase-*.
+  # feature-correctness and system-correctness: run on pushes to dev/dev-phase-*
+  # and code-bearing pull requests to any branch. ready_for_review is included
+  # so the system-correctness integration job starts when a draft is promoted.
   push:
     branches: [dev, "dev-phase-*"]
+    paths-ignore: ['**.md', '**.txt']
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ['**.md', '**.txt']
   workflow_dispatch:
+
+# CI taxonomy: watchdog-unit is feature-correctness and runs on draft PRs;
+# watchdog-integration is system-correctness and waits until the PR is ready
+# for review. The integration job is intentionally not draft-stage coverage:
+# its Postgres-backed breach-detection pipeline is deferred to the review gate
+# so its system-correctness classification matches the CI taxonomy. This loses
+# integration feedback while a PR is a draft, while preserving the unit battery
+# and all ready-for-review and merged-commit coverage. Both jobs skip docs-only
+# changes because neither job validates documentation.
 
 # CI velocity tiers (issue #600): cancel superseded PR runs so a re-push does
 # not pile up duplicate suites. push:main/dev runs are exempt — they keep a
@@ -45,6 +59,8 @@ jobs:
   fast:
     name: watchdog-unit
     runs-on: ubuntu-latest
+    env:
+      CI_CLASS: feature-correctness
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +88,10 @@ jobs:
   pg:
     name: watchdog-integration
     runs-on: ubuntu-latest
+    env:
+      CI_CLASS: system-correctness
+    # system-correctness is deferred until the PR is ready for review.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # 30 (was 20): issue #1282 added cursor_and_volume (7 tests, ~25s locally),
     # each test booting its own Postgres testcontainer.
     timeout-minutes: 30
