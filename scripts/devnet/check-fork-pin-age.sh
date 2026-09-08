@@ -71,18 +71,44 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-for n in "$WARN_DAYS" ${MAX_AGE_DAYS:+"$MAX_AGE_DAYS"}; do
-  case "$n" in
-    ''|*[!0-9]*) echo "ERROR: day thresholds must be non-negative integers, got '$n'" >&2; exit 2 ;;
+# Validate each threshold separately rather than looping over an expansion:
+# `${MAX_AGE_DAYS:+"$MAX_AGE_DAYS"}` leaves the outer expansion unquoted, so a
+# value containing glob metacharacters would be pathname-expanded before the
+# digit test and the unexpanded value would still be what reaches the `-gt`
+# comparison below.
+require_days() {
+  case "$2" in
+    ''|*[!0-9]*)
+      echo "ERROR: day thresholds must be non-negative integers, got '$2' for $1" >&2
+      exit 2
+      ;;
   esac
-done
+}
+require_days --warn-days "$WARN_DAYS"
+if [ -n "$MAX_AGE_DAYS" ]; then require_days --max-age-days "$MAX_AGE_DAYS"; fi
 
 if [ ! -f "$MANIFEST" ]; then
   echo "ERROR: fork-state manifest not found: $MANIFEST" >&2
   exit 2
 fi
 
-CAPTURED_AT="$(jq -r '.captured_at // empty' "$MANIFEST")"
+# Everything read out of the manifest is echoed into GitHub Actions workflow
+# commands (`::warning::` / `::error::`) below. `jq -r` emits embedded newlines
+# literally, so an unsanitised field would let a value in a committed JSON file
+# start its own output line, which the runner parses as a *new* workflow
+# command — enough to forge annotations, mask arbitrary log substrings with
+# `::add-mask::`, or collapse the rest of the step behind `::group::`. Strip CR
+# and LF and bound the length of every field before it reaches an echo. The
+# `state_sha256` digest binding does not help here: it covers the .anvil-state
+# blob, not this manifest's own fields.
+# Strip CR/LF (which is what would start a new command line), defang any `::`
+# prefix so the token cannot read as a workflow command even when quoted back
+# inside a diagnostic, and bound the length. A legitimate ISO-8601 timestamp
+# contains single colons but never a doubled one, so this leaves real values
+# untouched.
+scrub() { printf '%s' "$1" | tr -d '\n\r' | sed 's/::/: :/g' | cut -c1-64; }
+
+CAPTURED_AT="$(scrub "$(jq -r '.captured_at // empty' "$MANIFEST")")"
 if [ -z "$CAPTURED_AT" ]; then
   echo "ERROR: $MANIFEST has no captured_at field; the pin's age cannot be determined" >&2
   exit 2
@@ -100,7 +126,14 @@ if [ -z "$CAPTURED_EPOCH" ]; then
   exit 2
 fi
 
-FORK_BLOCK="$(jq -r '.fork_block // "unknown"' "$MANIFEST")"
+# `fork_block` is presentational here (the age comes from captured_at), so a
+# malformed value must not fail the gate — but it must not be able to inject a
+# workflow command either. Accept digits only; anything else reports as
+# "unparseable" rather than being echoed.
+FORK_BLOCK="$(scrub "$(jq -r '(.fork_block // "unknown") | tostring' "$MANIFEST")")"
+case "$FORK_BLOCK" in
+  ''|*[!0-9]*) FORK_BLOCK="unparseable" ;;
+esac
 NOW_EPOCH="$(date -u +%s)"
 AGE_SECONDS=$((NOW_EPOCH - CAPTURED_EPOCH))
 # A pin captured in the future is nonsense but must not underflow into a

@@ -105,6 +105,42 @@ run_case "non-numeric threshold rejected" 2 "non-negative integers" --manifest "
 echo "[selftest] future capture does not underflow"
 run_case "future captured_at clamps to zero" 0 "age_days=0" --manifest "$FUTURE"
 
+# Manifest fields are echoed into GitHub Actions workflow commands, and `jq -r`
+# emits embedded newlines literally — so a field carrying a newline plus a
+# `::`-prefixed string could forge a second workflow command (`::add-mask::`,
+# `::group::`, a fake `::error::`) from a committed file. Assert the helper
+# emits exactly ONE workflow command per run regardless of what the manifest
+# contains, and that the injected text never reaches the output.
+echo "[selftest] manifest fields cannot forge workflow commands"
+INJECT=$'48896605\n::add-mask::hunter2\n::error::FORGED'
+jq -n --arg fb "$INJECT" --arg ts "$(python3 -c "import datetime;print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=48)).strftime('%Y-%m-%dT%H:%M:%SZ'))")" \
+  '{fork_block:$fb, captured_at:$ts}' > "$WORKDIR/inject-block.json"
+jq -n --arg ts "$INJECT" '{fork_block:1, captured_at:$ts}' > "$WORKDIR/inject-ts.json"
+
+# fork_block is presentational, so a hostile value must neither inject nor fail
+# the gate: the run still warns (age 48 > 21) and still exits 0.
+run_case "hostile fork_block still warns"        0 "::warning::" --manifest "$WORKDIR/inject-block.json"
+run_case "hostile fork_block reported unparseable" 0 "fork_block=unparseable" --manifest "$WORKDIR/inject-block.json"
+run_case_absent "hostile fork_block does not emit add-mask" 0 "::add-mask::" --manifest "$WORKDIR/inject-block.json"
+run_case_absent "hostile fork_block does not emit forged error" 0 "FORGED" --manifest "$WORKDIR/inject-block.json"
+# captured_at is load-bearing, so a hostile value must fail loudly instead.
+run_case "hostile captured_at fails loudly" 2 "not a parseable timestamp" --manifest "$WORKDIR/inject-ts.json"
+run_case_absent "hostile captured_at does not emit add-mask" 2 "::add-mask::" --manifest "$WORKDIR/inject-ts.json"
+
+# Exactly one workflow-command line, whatever the manifest holds.
+for m in "$WORKDIR/inject-block.json" "$STALE"; do
+  n=$("$HELPER" --manifest "$m" 2>&1 | grep -c '^::' || true)
+  if [ "$n" -eq 1 ]; then
+    echo "  ok: exactly one workflow command emitted ($(basename "$m"))"
+  else
+    echo "FAIL [workflow-command count]: $(basename "$m") emitted $n lines starting with '::', expected 1" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+echo "[selftest] glob metacharacters in a threshold are rejected, not expanded"
+run_case "glob threshold rejected" 2 "non-negative integers" --manifest "$FRESH" --max-age-days '*'
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "[selftest] FAILED: $FAILURES case(s)" >&2
   exit 1
