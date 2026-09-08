@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Offline behaviour self-test for scripts/devnet/check-fork-pin-age.sh.
 #
-# Canonical: docs/development/smoke-test-design.md (Devnet section).
+# Canonical: docs/technical/full-stack-devnet.md §"Fork-state fixture" →
+#            "Pin age (issue #1386)".
 # Issue: #1386.
 #
 # The age gate's whole value is that it cannot stay quiet about a stale pin.

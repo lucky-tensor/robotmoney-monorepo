@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Report — and optionally gate on — the age of the committed Base fork pin.
 #
-# Canonical: docs/development/smoke-test-design.md (Devnet section),
-#            docs/technical/full-stack-devnet.md §"Fork-state fixture".
+# Canonical: docs/technical/full-stack-devnet.md §"Fork-state fixture" →
+#            "Pin age (issue #1386)", which documents this gate's thresholds,
+#            why the age is measured from CURRENT.json's captured_at, and the
+#            refresh recipe this script's failure message points at.
 # Issue:     #1386.
 #
 # WHY THIS EXISTS
