@@ -67,8 +67,9 @@ pub struct VaultData {
     pub symbol: String,
     /// `vault.decimals()` — ERC-20 share decimals.
     pub decimals: u8,
-    /// `vault.totalAssets()` — `uint256` decimal string.
-    pub total_assets: DecimalU256,
+    /// `vault.totalAssets()` — `uint256` decimal string, or `null` when the
+    /// sub-read failed.
+    pub total_assets: Option<DecimalU256>,
     /// `vault.totalSupply()` — `uint256` decimal string.
     pub total_supply: DecimalU256,
     /// Computed share price as `totalAssets * 10^decimals / totalSupply`,
@@ -128,8 +129,9 @@ pub struct RegistryVaultData {
     pub status: String,
     /// Unix timestamp when the vault was registered.
     pub registered_at: u64,
-    /// `vault.totalAssets()` — live from chain.
-    pub total_assets: DecimalU256,
+    /// `vault.totalAssets()` — live from chain, or `null` when the sub-read
+    /// failed.
+    pub total_assets: Option<DecimalU256>,
     /// `vault.totalSupply()` — live from chain.
     pub total_supply: DecimalU256,
     /// Computed share price. `null` when `totalSupply == 0`.
@@ -293,7 +295,7 @@ async fn read_vault(
     let total_assets =
         match call_u256_view(rpc, vault, &block_tag, MockVault::totalAssetsCall {}).await {
             Ok(v) => {
-                b.data_mut().total_assets = DecimalU256(v);
+                b.data_mut().total_assets = Some(DecimalU256(v));
                 Some(v)
             }
             Err(e) => {
@@ -362,7 +364,7 @@ async fn read_vault_from_registry(
     let total_assets =
         match call_u256_view(rpc, vault, &block_tag, MockVault::totalAssetsCall {}).await {
             Ok(v) => {
-                b.data_mut().total_assets = DecimalU256(v);
+                b.data_mut().total_assets = Some(DecimalU256(v));
                 Some(v)
             }
             Err(e) => {

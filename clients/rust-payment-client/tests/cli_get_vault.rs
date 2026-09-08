@@ -195,7 +195,7 @@ async fn get_vault_clean_envelope_with_share_price() {
 }
 
 #[tokio::test]
-async fn get_vault_partial_when_total_supply_reverts() {
+async fn get_vault_partial_when_total_assets_reverts() {
     let mut server = mockito::Server::new_async().await;
     let chain_id = 31337u64;
     let block_no = 1u64;
@@ -215,7 +215,7 @@ async fn get_vault_partial_when_total_supply_reverts() {
         .expect_at_least(0)
         .create_async()
         .await;
-    // gateway.vault, asset, name, symbol, decimals, totalAssets — all OK.
+    // gateway.vault, asset, name, symbol, decimals — all OK.
     server
         .mock("POST", "/")
         .match_body(match_eth_call_selector(&selector_hex_of::<
@@ -274,18 +274,18 @@ async fn get_vault_partial_when_total_supply_reverts() {
             MockVault::totalAssetsCall,
         >()))
         .with_status(200)
-        .with_body(jrpc_result(&enc_u256(U256::from(1u64))))
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}"#)
         .expect_at_least(0)
         .create_async()
         .await;
-    // totalSupply: revert
+    // totalSupply remains readable.
     server
         .mock("POST", "/")
         .match_body(match_eth_call_selector(&selector_hex_of::<
             MockVault::totalSupplyCall,
         >()))
         .with_status(200)
-        .with_body(r#"{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}"#)
+        .with_body(jrpc_result(&enc_u256(U256::from(1u64))))
         .expect_at_least(0)
         .create_async()
         .await;
@@ -300,7 +300,9 @@ async fn get_vault_partial_when_total_supply_reverts() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["partial"], true);
     let errs = v["errors"].as_array().unwrap();
-    assert!(errs.iter().any(|e| e["field"] == "total_supply"));
-    // share_price uncomputable when total_supply read failed
+    assert!(errs.iter().any(|e| e["field"] == "total_assets"));
+    // A failed totalAssets read is null, not the valid zero TVL value.
+    assert!(v["data"]["total_assets"].is_null());
+    // share_price uncomputable when total_assets read failed
     assert!(v["data"]["share_price"].is_null());
 }

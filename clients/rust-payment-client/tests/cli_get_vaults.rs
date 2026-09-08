@@ -327,6 +327,7 @@ async fn get_vaults_paused_vault_status() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     let vaults = v["data"]["vaults"].as_array().unwrap();
     assert_eq!(vaults[0]["status"], "paused");
+    assert_eq!(vaults[0]["total_assets"], "0");
 }
 
 // ---- get-vault --address tests ----------------------------------------------

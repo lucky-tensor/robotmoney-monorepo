@@ -67,8 +67,9 @@ pub struct VaultEntry {
     pub status: String,
     /// `VaultMetadata.registeredAt` — block timestamp of `registerVault`.
     pub registered_at: u64,
-    /// Live `vault.totalAssets()` — decimal string.
-    pub total_assets: DecimalU256,
+    /// Live `vault.totalAssets()` — decimal string, or `null` when the
+    /// sub-read failed.
+    pub total_assets: Option<DecimalU256>,
 }
 
 /// `data` payload for `rmpc get-vaults`. Contains one `VaultEntry` per
@@ -178,10 +179,10 @@ async fn read_vaults(
 
         // Fetch live totalAssets from the vault contract.
         let total_assets = match call_total_assets(rpc, *vault_addr, &block_tag).await {
-            Ok(v) => v,
+            Ok(v) => Some(DecimalU256(v)),
             Err(e) => {
                 b.record_err(format!("{prefix}.total_assets"), e);
-                U256::ZERO
+                None
             }
         };
 
@@ -192,12 +193,12 @@ async fn read_vaults(
                 asset: format!("{:#x}", rec.metadata.asset),
                 status: vault_status_to_str(rec.status).to_string(),
                 registered_at: rec.metadata.registeredAt.saturating_to::<u64>(),
-                total_assets: DecimalU256(total_assets),
+                total_assets,
             }
         } else {
             VaultEntry {
                 address: format!("{vault_addr:#x}"),
-                total_assets: DecimalU256(total_assets),
+                total_assets,
                 ..Default::default()
             }
         };
@@ -331,7 +332,7 @@ mod tests {
         let entry = VaultEntry {
             address: "0x0000000000000000000000000000000000000001".to_string(),
             name: "Test Vault".to_string(),
-            total_assets: DecimalU256(U256::from(1_000_000u64)),
+            total_assets: Some(DecimalU256(U256::from(1_000_000u64))),
             ..Default::default()
         };
         let v: Value = serde_json::to_value(&entry).unwrap();
@@ -340,6 +341,20 @@ mod tests {
             "total_assets must be a JSON string"
         );
         assert_eq!(v["total_assets"].as_str().unwrap(), "1000000");
+    }
+
+    #[test]
+    fn failed_total_assets_is_null_but_successful_zero_is_string() {
+        let failed = VaultEntry::default();
+        let failed_json = serde_json::to_value(&failed).unwrap();
+        assert!(failed_json["total_assets"].is_null());
+
+        let empty = VaultEntry {
+            total_assets: Some(DecimalU256(U256::ZERO)),
+            ..Default::default()
+        };
+        let empty_json = serde_json::to_value(&empty).unwrap();
+        assert_eq!(empty_json["total_assets"], "0");
     }
 
     /// When registry_address is absent from config, run() must return

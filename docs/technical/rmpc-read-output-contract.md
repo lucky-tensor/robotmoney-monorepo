@@ -52,7 +52,18 @@ The deferred existing `rmpc status` (issue #15) command predates §9 and emits a
 - **Why two distinct widths.** `u128` and `U256` are physically different on-chain widths. Some Robot Money fields (per-window caps stored as `uint128`, basket amounts) are deliberately sub-`U256`. Distinct wrappers prevent a downstream batch from silently widening a `uint128` field into `U256` and bloating the JSON.
 - **Type-check criterion in §9 test plan.** The test plan asks "Type-check that no field uses a JSON number for u256/u128 values." The mechanism: every per-command `data` struct uses these wrappers, so the unit tests for those structs (and the lib-level `decimal_u256_serializes_as_string_never_number` smoke test in `read_output.rs`) collectively prove the property.
 
-### 3.6 Snapshot-test placement is per-command, not per-envelope
+### 3.6 Failed nullable sub-reads use `null`, not an in-domain sentinel
+
+- **Decision.** A per-field `uint256` read that fails after the command has
+  established its envelope is represented as `null` when the field's valid
+  domain includes zero. A successful zero remains the decimal string `"0"`.
+  The command still records the field in `errors` and sets `partial: true`.
+- **Rationale.** A fabricated numeric default is data that a consumer can
+  mistake for a successful answer. JSON `null` matches the existing
+  `share_price` convention for "no answer" and is distinguishable from every
+  successful `totalAssets()` result, including an empty vault.
+
+### 3.7 Snapshot-test placement is per-command, not per-envelope
 
 - **Decision.** The shared module ships smoke tests for `Source`, `Envelope`, `PartialBuilder`, and the decimal newtypes only. Snapshot tests over **rendered JSON for a real read command** live with each `commands/get_*.rs` module, one per read-command batch.
 - **Rationale.** A snapshot test on the empty envelope alone tells you nothing about whether a real command's output drifts. The §9 acceptance criterion "Snapshot tests assert the envelope shape across commands" is satisfied by per-command snapshots, each of which exercises the shared module end-to-end. Centralizing them in `read_output` would couple the test fixture to whichever command was implemented first.
