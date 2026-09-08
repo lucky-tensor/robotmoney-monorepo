@@ -1,8 +1,22 @@
 //! Shared helpers for watchdog integration tests.
 //!
-//! - `try_pg_fixture()` — boots Postgres testcontainer + applies explorer-indexer
-//!   migrations (same canonical schema the watchdog queries). Skips if Docker is absent.
+//! - `pg_fixture()` — boots Postgres testcontainer + applies explorer-indexer
+//!   migrations (same canonical schema the watchdog queries). **Panics** naming the
+//!   missing dependency if Docker/Postgres is unavailable — it never skips.
 //! - `MockWebhookServer` — in-process HTTP server for alert payload capture.
+//!
+//! # Why this fixture panics instead of returning `Option` (issue #1377)
+//!
+//! It used to be `try_pg_fixture() -> Option<PgFixture>`, and every one of its ten
+//! callers wrote `let Some(fx) = try_pg_fixture().await else { return; };`. On a
+//! runner without Docker that early `return` is indistinguishable from success: the
+//! harness printed `test result: ok. 10 passed` having executed no assertion at all.
+//! That is the "loud-skip, never silent-skip" invariant inverted — the suite was
+//! greenest exactly when it verified least.
+//!
+//! Returning `PgFixture` rather than `Option<PgFixture>` closes the shape
+//! structurally, not just at today's call sites: a future caller *cannot* write the
+//! `else { return; }` guard, because there is no `None` to match.
 
 #![allow(dead_code)]
 
@@ -22,22 +36,42 @@ pub struct PgFixture {
     _container: ContainerAsync<Postgres>,
 }
 
+/// Prefix every unmet-dependency panic carries, so one grep over a job log finds
+/// the cause without reading the backtrace.
+const MISSING: &str = "[watchdog-tests] REQUIRED DEPENDENCY UNAVAILABLE";
+
 /// Boot a fresh Postgres container, apply the explorer-indexer canonical migrations,
-/// and return the pool.  Returns `None` if Docker is unavailable.
-pub async fn try_pg_fixture() -> Option<PgFixture> {
-    if which::which("docker").is_err() {
-        eprintln!("[watchdog-tests] skipping: docker not on PATH");
-        return None;
-    }
+/// and return the pool.
+///
+/// # Panics
+///
+/// Panics — naming the missing dependency — when Docker is not on `PATH`, when the
+/// Postgres testcontainer cannot be started or addressed, when the pool cannot
+/// connect, or when the migrations fail. These integration tests have no meaningful
+/// no-Postgres mode: an unmet dependency must red the job, never pass it (#1377).
+pub async fn pg_fixture() -> PgFixture {
+    assert!(
+        which::which("docker").is_ok(),
+        "{MISSING}: `docker` is not on PATH. The watchdog integration tests need a \
+         Postgres testcontainer (Docker) — install/start Docker, or run only \
+         `cargo test -p watchdog --lib`, which needs none. This is a hard failure \
+         rather than a skip on purpose: an absent dependency must red the job."
+    );
     let container = match Postgres::default().start().await {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("[watchdog-tests] skipping: postgres container start failed: {e}");
-            return None;
-        }
+        Err(e) => panic!(
+            "{MISSING}: the Postgres testcontainer failed to start: {e}. Docker is on \
+             PATH but not usable (daemon down, socket permissions, or no image pull)."
+        ),
     };
-    let host = container.get_host().await.ok()?;
-    let port = container.get_host_port_ipv4(5432).await.ok()?;
+    let host = container
+        .get_host()
+        .await
+        .unwrap_or_else(|e| panic!("{MISSING}: Postgres testcontainer host unknown: {e}"));
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .unwrap_or_else(|e| panic!("{MISSING}: Postgres testcontainer port 5432 unmapped: {e}"));
     let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
 
     let pool = PgPoolOptions::new()
@@ -45,7 +79,9 @@ pub async fn try_pg_fixture() -> Option<PgFixture> {
         .acquire_timeout(Duration::from_secs(10))
         .connect(&url)
         .await
-        .ok()?;
+        .unwrap_or_else(|e| {
+            panic!("{MISSING}: could not connect to the Postgres testcontainer at {url}: {e}")
+        });
 
     // Apply the canonical explorer-indexer migrations so the watchdog's SQL
     // queries have the expected tables.
@@ -53,10 +89,10 @@ pub async fn try_pg_fixture() -> Option<PgFixture> {
         panic!("[watchdog-tests] migrate failed: {e}");
     }
 
-    Some(PgFixture {
+    PgFixture {
         pool,
         _container: container,
-    })
+    }
 }
 
 /// Captured webhook request.

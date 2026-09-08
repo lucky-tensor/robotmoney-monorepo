@@ -17,9 +17,12 @@
 # - The threshold_breach tests start a MockWebhookServer on localhost. If the runner
 #   is behind a strict firewall that blocks loopback TCP, the alert dispatch will fail.
 #   GitHub-hosted ubuntu-latest runners have unrestricted loopback — no special setup.
-# - The pg integration tests skip cleanly when Docker is unavailable (try_pg_fixture
-#   returns None). If you see all tests passing but CycleResult::Breached is never
-#   exercised, check that Docker is present on the runner.
+# - The pg integration tests FAIL LOUDLY when Docker is unavailable: tests/common/mod.rs
+#   ::pg_fixture panics with "[watchdog-tests] REQUIRED DEPENDENCY UNAVAILABLE: `docker`
+#   is not on PATH". Until issue #1377 it was `try_pg_fixture() -> Option<PgFixture>` and
+#   every caller wrote `else { return; }`, so a Docker-less runner printed
+#   "10 passed" having asserted nothing. Do not reintroduce an Option-returning fixture:
+#   if this job's runner ever loses Docker, the correct signal is red, not green.
 
 name: watchdog-rate-monitor
 
@@ -101,7 +104,7 @@ jobs:
       # volume anomaly detector, i.e. the two conditions the watchdog exists to
       # raise. It was executed by no workflow: only alert_webhook and
       # threshold_breach were ever named. It uses the same
-      # tests/common/mod.rs::try_pg_fixture Postgres testcontainer as the two
+      # tests/common/mod.rs::pg_fixture Postgres testcontainer as the two
       # steps above, so it needs nothing this job does not already have.
       # Measured cost: 7 tests, ~25s wall clock locally.
       #
