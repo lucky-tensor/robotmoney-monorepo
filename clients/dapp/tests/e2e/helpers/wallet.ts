@@ -17,6 +17,7 @@
 import type { Page } from "@playwright/test";
 import { createPublicClient, createWalletClient, http, type Hex, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { estimateGasBuffered } from "./gas";
 import type { DevnetEndpoints } from "./devnet";
 
 interface InjectWalletOptions {
@@ -87,15 +88,17 @@ export async function injectWallet(page: Page, opts: InjectWalletOptions): Promi
         // mines but reverts out-of-gas — the balance never changes and the
         // failure is silent. Real wallets pad the estimate; we do the same
         // with a 1.5x buffer so the harness behaves like production.
+        //
+        // The buffer itself lives in `helpers/gas.ts`, shared with the specs
+        // that sign directly rather than through this provider, so the two
+        // paths cannot drift apart (issue #1388).
         let gas: bigint | undefined = tx.gas ? BigInt(tx.gas) : undefined;
         if (gas === undefined) {
-          const estimated = await publicClient.estimateGas({
-            account: account.address,
+          gas = await estimateGasBuffered(publicClient, account.address, {
             to: tx.to,
             data: tx.data,
             value: tx.value ? BigInt(tx.value) : undefined,
           });
-          gas = (estimated * 3n) / 2n;
         }
         return walletClient.sendTransaction({
           chain: null,

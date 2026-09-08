@@ -144,6 +144,28 @@ module.exports = {
       rules: { "no-restricted-syntax": "off" },
     },
     {
+      // A spec that signs a devnet transaction directly bypasses both existing
+      // 1.5x gas buffers (helpers/wallet.ts, Fixture::cast_send), and viem
+      // forwards a bare `eth_estimateGas` result verbatim — the smallest limit
+      // at which the OUTERMOST frame succeeds, hence zero usable margin for
+      // anything nested under EIP-150's 63/64 rule. Route it through
+      // helpers/gas.ts instead. Issue #1388; docs/testing/geth-gas-estimation.md.
+      files: ["tests/e2e/**/*.spec.ts"],
+      rules: {
+        "no-restricted-syntax": [
+          "error",
+          {
+            selector: "CallExpression[callee.property.name='sendTransaction']",
+            message:
+              "Do not call walletClient.sendTransaction() in an e2e spec — it forwards an " +
+              "unbuffered eth_estimateGas result as the gas limit. Use " +
+              "sendBufferedTransaction() from ./helpers/gas (issue #1388, " +
+              "docs/testing/geth-gas-estimation.md).",
+          },
+        ],
+      },
+    },
+    {
       files: ["tests/**/*.{ts,tsx}"],
       rules: {
         "@typescript-eslint/no-non-null-assertion": "off",

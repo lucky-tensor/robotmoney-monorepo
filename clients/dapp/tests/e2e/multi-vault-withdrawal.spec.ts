@@ -28,6 +28,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadEndpoints, type DevnetEndpoints } from "./helpers/devnet";
+import { sendBufferedTransaction } from "./helpers/gas";
 import { openDapp, openTab } from "./helpers/wallet";
 import { erc20Abi, vaultAbi } from "../../src/lib/abi";
 
@@ -55,15 +56,27 @@ async function vaultBalanceOf(rpc: string, vault: string, who: string): Promise<
   return j.result && j.result !== "0x" ? BigInt(j.result) : 0n;
 }
 
-/** Sign USDC.approve(vault, amount) + vault.deposit(amount, receiver) and await both. */
+/**
+ * Sign USDC.approve(vault, amount) + vault.deposit(amount, receiver) and await both.
+ *
+ * Signed through `sendBufferedTransaction`, never a bare
+ * `wallet.sendTransaction()`. This spec signs directly rather than through the
+ * injected mock wallet, so it inherits neither that wallet's 1.5x gas buffer
+ * nor `Fixture::cast_send`'s. A bare `eth_estimateGas` result is the smallest
+ * limit at which the OUTERMOST frame succeeds, so under EIP-150's 63/64 rule
+ * the `MetaMorpho.totalAssets()` staticcall three frames inside `_routeDeposit`
+ * is left with nothing spare and any movement between estimate and execution
+ * runs it out of gas. See `docs/testing/geth-gas-estimation.md` and issue #1388
+ * for the measurements. This is robustness only — the deposit's ~1.4M gas cost
+ * is issue #1391, and buffering the limit does not reduce it.
+ */
 async function depositToVault(endpoints: DevnetEndpoints, amount: bigint): Promise<void> {
   const account = privateKeyToAccount(endpoints.admin_private_key as Hex);
   const wallet = createWalletClient({ account, transport: http(endpoints.rpc_url) });
   const publicClient = createPublicClient({ transport: http(endpoints.rpc_url) });
 
   // Approve
-  const approveTx = await wallet.sendTransaction({
-    chain: null,
+  const approveTx = await sendBufferedTransaction(wallet, publicClient, {
     to: endpoints.usdc_addr as Address,
     data: encodeFunctionData({
       abi: erc20Abi,
@@ -74,8 +87,7 @@ async function depositToVault(endpoints: DevnetEndpoints, amount: bigint): Promi
   await publicClient.waitForTransactionReceipt({ hash: approveTx, timeout: 60_000 });
 
   // Deposit
-  const depositTx = await wallet.sendTransaction({
-    chain: null,
+  const depositTx = await sendBufferedTransaction(wallet, publicClient, {
     to: endpoints.vault_addr as Address,
     data: encodeFunctionData({
       abi: vaultAbi,
