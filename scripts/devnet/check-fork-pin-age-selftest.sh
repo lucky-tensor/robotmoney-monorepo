@@ -127,19 +127,33 @@ run_case_absent "hostile fork_block does not emit forged error" 0 "FORGED" --man
 run_case "hostile captured_at fails loudly" 2 "not a parseable timestamp" --manifest "$WORKDIR/inject-ts.json"
 run_case_absent "hostile captured_at does not emit add-mask" 2 "::add-mask::" --manifest "$WORKDIR/inject-ts.json"
 
-# Exactly one workflow-command line, whatever the manifest holds.
+# Exactly one workflow-command line, whatever the manifest holds — on BOTH the
+# soft (::warning::) and hard (::error::) paths, since each emits its own
+# annotation and each interpolates the manifest's fields.
+#
+# The match is anchored with optional leading whitespace, not at column 0: the
+# Actions runner trims leading whitespace before matching a command prefix, so
+# `grep -c '^::'` would pass a payload the runner would still honour.
 for m in "$WORKDIR/inject-block.json" "$STALE"; do
-  n=$("$HELPER" --manifest "$m" 2>&1 | grep -c '^::' || true)
-  if [ "$n" -eq 1 ]; then
-    echo "  ok: exactly one workflow command emitted ($(basename "$m"))"
-  else
-    echo "FAIL [workflow-command count]: $(basename "$m") emitted $n lines starting with '::', expected 1" >&2
-    FAILURES=$((FAILURES + 1))
-  fi
+  for gate in "" "--max-age-days 30"; do
+    # shellcheck disable=SC2086  # $gate is a literal flag pair, intentionally split.
+    n=$("$HELPER" --manifest "$m" $gate 2>&1 | grep -cE '^[[:space:]]*::' || true)
+    label="$(basename "$m")${gate:+ (hard gate)}"
+    if [ "$n" -eq 1 ]; then
+      echo "  ok: exactly one workflow command emitted ($label)"
+    else
+      echo "FAIL [workflow-command count]: $label emitted $n workflow-command lines, expected 1" >&2
+      FAILURES=$((FAILURES + 1))
+    fi
+  done
 done
 
-echo "[selftest] glob metacharacters in a threshold are rejected, not expanded"
+echo "[selftest] thresholds that would disable the gate are rejected"
 run_case "glob threshold rejected" 2 "non-negative integers" --manifest "$FRESH" --max-age-days '*'
+# An uncomparable integer would make `[ -gt ]` error inside an `if`, which set -e
+# does not catch, so the gate would silently pass. Must be rejected up front.
+run_case "uncomparable threshold rejected" 2 "at most 5 digits" --manifest "$STALE" --max-age-days 99999999999999999999999
+run_case_absent "uncomparable threshold does not exit 0" 2 "OK: pin is within" --manifest "$STALE" --max-age-days 99999999999999999999999
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "[selftest] FAILED: $FAILURES case(s)" >&2

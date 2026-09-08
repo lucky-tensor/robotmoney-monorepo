@@ -76,6 +76,14 @@ done
 # value containing glob metacharacters would be pathname-expanded before the
 # digit test and the unexpanded value would still be what reaches the `-gt`
 # comparison below.
+# The length bound is not cosmetic. `[ "$AGE_DAYS" -gt "$MAX_AGE_DAYS" ]` with a
+# value beyond the shell's integer range errors "integer expression expected",
+# and because that lives in an `if` condition `set -e` does not abort — the
+# comparison is simply taken as false, so the hard gate silently no-ops and the
+# script exits 0 while still printing the threshold as though it were enforced.
+# A gate that can quietly disable itself is the exact defect this whole check
+# exists to remove, so reject anything that cannot be compared. Five digits is
+# ~273 years, far past any useful pin age.
 require_days() {
   case "$2" in
     ''|*[!0-9]*)
@@ -83,6 +91,10 @@ require_days() {
       exit 2
       ;;
   esac
+  if [ "${#2}" -gt 5 ]; then
+    echo "ERROR: day thresholds must be at most 5 digits, got '$2' for $1 (a value the shell cannot compare would silently disable the gate)" >&2
+    exit 2
+  fi
 }
 require_days --warn-days "$WARN_DAYS"
 if [ -n "$MAX_AGE_DAYS" ]; then require_days --max-age-days "$MAX_AGE_DAYS"; fi
