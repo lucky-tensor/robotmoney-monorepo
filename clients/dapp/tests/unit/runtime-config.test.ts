@@ -10,8 +10,8 @@
  *     half-configured app.
  *
  * Also pins the security property that makes the runtime config safe to
- * serve publicly: the faucet harness private key and the history-pane flag
- * can never be introduced through it.
+ * serve publicly: the faucet harness private key, the history-pane flag, and
+ * gateway code-hash verification pin can never be introduced through it.
  */
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -249,6 +249,28 @@ describe("parseRuntimeConfig", () => {
 
     expect(parsed).toEqual({});
     expect(RUNTIME_CONFIG_KEYS).not.toContain("VITE_HISTORY_PANE");
+  });
+
+  it("never admits the gateway code-hash verification pin from the runtime document", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const buildTimePin = `0x${"d".repeat(64)}`;
+
+    const parsed = parseRuntimeConfig({ VITE_GATEWAY_EXPECTED_CODE_HASH: `0x${"e".repeat(64)}` });
+
+    expect(parsed).toEqual({});
+    expect(RUNTIME_CONFIG_KEYS).not.toContain("VITE_GATEWAY_EXPECTED_CODE_HASH");
+
+    const { fetchImpl } = stubFetch({
+      json: () => Promise.resolve({ VITE_GATEWAY_EXPECTED_CODE_HASH: `0x${"e".repeat(64)}` }),
+    });
+    await expect(
+      loadRuntimeConfig({
+        fetchImpl,
+        buildEnv: { ...BUILD_ENV, VITE_GATEWAY_EXPECTED_CODE_HASH: buildTimePin },
+      }),
+    ).resolves.toMatchObject({
+      config: { VITE_GATEWAY_EXPECTED_CODE_HASH: buildTimePin },
+    });
   });
 
   it("cannot override a build-time-only value through loadRuntimeConfig either", async () => {

@@ -31,7 +31,7 @@
  *
  * `/config.json` is world-readable by anyone who can load the dapp, and it
  * is attacker-visible in a way a compiled bundle constant is not. Only the
- * keys in `RUNTIME_CONFIG_KEYS` are ever taken from it. Two exclusions are
+ * keys in `RUNTIME_CONFIG_KEYS` are ever taken from it. Three exclusions are
  * load-bearing rather than incidental:
  *
  *   - `VITE_FAUCET_HARNESS_PRIVATE_KEY` stays build-time-only. Serving a
@@ -42,6 +42,11 @@
  *   - `VITE_HISTORY_PANE` stays build+ADR-only. `featureFlags.ts` documents
  *     that flipping it must require a rebuild and an ADR, so no runtime
  *     toggle path is offered.
+ *   - `VITE_GATEWAY_EXPECTED_CODE_HASH` stays build-time-only. It is the
+ *     verification pin that decides whether admin writes are safe. Keeping it
+ *     in the bundle means a future release-provenance attestation covers the
+ *     pin as well as the verifier that consumes it; a separately mutable
+ *     same-origin document must not be able to replace either.
  *
  * Keys outside the allowlist are dropped with a warning rather than merged,
  * so a mistaken or hostile `/config.json` cannot reach either surface.
@@ -58,7 +63,7 @@ export type RuntimeConfig = Readonly<Record<string, string | undefined>>;
 
 /**
  * The only keys the fetched document may supply. Anything else — including
- * the two by-design build-time-only variables — is ignored. See the security
+ * the three by-design build-time-only variables — is ignored. See the security
  * note in the module doc before adding to this list.
  */
 export const RUNTIME_CONFIG_KEYS = [
@@ -69,7 +74,6 @@ export const RUNTIME_CONFIG_KEYS = [
   "VITE_GOVERNANCE_ADDRESS",
   "VITE_TIMELOCK_ADDRESS",
   "VITE_RM_TOKEN_ADDRESS",
-  "VITE_GATEWAY_EXPECTED_CODE_HASH",
   "VITE_ENV_CLASS",
   "VITE_VAULT_ADDRESSES",
   "VITE_DEVNET_RPC_URL",
@@ -177,7 +181,8 @@ export function parseRuntimeConfig(payload: unknown): RuntimeConfig {
     // already discarded by the time we get here.
     console.warn(
       `${RUNTIME_CONFIG_URL}: ignoring key(s) outside the runtime allowlist: ${rejected.join(", ")}. ` +
-        "Build-time-only variables (the faucet harness key, the history-pane flag) " +
+        "Build-time-only variables (the faucet harness key, the history-pane flag, and " +
+        "the gateway code-hash verification pin) " +
         "are never read from the runtime config by design.",
     );
   }

@@ -57,12 +57,18 @@ the user signs.
 
 ### 3. Pinned on-chain invariants
 
-- `VITE_GATEWAY_EXPECTED_CODE_HASH`, gateway/vault addresses, and
-  `chainId` are baked into the bundle at build time.
+- `VITE_GATEWAY_EXPECTED_CODE_HASH` is baked into the bundle at build time
+  and is excluded from runtime `/config.json`. It is a verification pin, not
+  ordinary deployment configuration: keeping it in the bundle means a future
+  release-provenance attestation covers the value that authorizes admin writes.
+- Gateway/vault addresses and deployment environment values may be supplied by
+  same-origin `/config.json`; the active chain is checked through the user's
+  wallet rather than trusted from that document.
 - The dapp refuses admin writes unless `keccak256(getBytecode(gateway))`
   matches the pinned hash. Even if the user's RPC lies about
   `eth_getCode`, the mismatch fails closed.
-- The dapp trusts the **bundle**, not the **node**.
+- The dapp trusts the **bundle's code-hash pin**, not the **node**, for this
+  verification decision.
 
 ### 4. Indexer / explorer is untrusted UI
 

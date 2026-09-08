@@ -57,9 +57,10 @@ build-time values stand. Any other failure (a bad status, an unparseable JSON
 document, a non-object payload) renders a visible error instead of a
 half-configured app.
 
-`VITE_FAUCET_HARNESS_PRIVATE_KEY` and `VITE_HISTORY_PANE` are deliberately
-build-time-only and are ignored if present in `/config.json`.
-
+`VITE_FAUCET_HARNESS_PRIVATE_KEY`, `VITE_HISTORY_PANE`, and
+`VITE_GATEWAY_EXPECTED_CODE_HASH` are deliberately build-time-only and are
+ignored if present in `/config.json`. The code hash is the gateway verification
+pin, so it must be covered by any future attestation of the bundle that uses it.
 
 | Var                               | Default                 | Purpose                                                                                       |
 | --------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------- |
