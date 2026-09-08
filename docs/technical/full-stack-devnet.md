@@ -57,6 +57,67 @@ requiring no live RPC at test time. For the fixture's purpose, the
 refresh command (`scripts/devnet/snapshot-fork.sh`), see
 `docs/development/environments.md` §2 ("Fork e2e") and ADR-0011.
 
+### Pin age (issue #1386)
+
+The devnet's chain clock is wall-clock `now` — `generate.sh` falls back to
+`date +%s`, and the smoke-test harness sets `GENESIS_TIMESTAMP` to now + 15s.
+The Aave V3 / Compound V3 / Morpho state the three adapters call is frozen at
+the pinned Base block. Those protocols accrue interest as a function of
+`block.timestamp - lastUpdateTimestamp`, so the *simulated* interval between
+the snapshot and the devnet's present grows by one day per day the pin is not
+refreshed. The fixture was historically refreshed every one to four weeks; in
+2026 it went 48 days with nothing in CI reporting the fact.
+
+`scripts/devnet/check-fork-pin-age.sh` makes the age visible:
+
+- `scripts/devnet/check-fork-manifest.sh` calls it on every run, so the age is
+  printed on the pull-request path and annotated as a `::warning::` once the
+  pin passes the 21-day cadence. It never fails there — a stale pin is a
+  maintenance signal, not a reason to red the merge queue.
+- The nightly `live-base-fork-drift` job calls it with `--max-age-days 30`,
+  where a hard failure is affordable and creates real pressure to refresh.
+- `scripts/devnet/check-fork-pin-age-selftest.sh` drives every branch of the
+  gate offline; `suite-01-02-forge-tests.yml` runs it before the real fixture
+  is judged.
+
+Measured, deliberately, from `CURRENT.json`'s `captured_at` rather than the
+block's own timestamp: `snapshot-fork.sh` advances the fork clock to wall-clock
+now *before* warming the adapters, so the protocol `lastUpdateTimestamp` values
+baked into the fixture are the capture wall-clock, not the fork block's
+timestamp.
+
+That last point also rules out "set `GENESIS_TIMESTAMP` to the forked block's
+timestamp" as a way to hold the delta at zero: the fixture's protocol
+timestamps are *later* than the fork block's, so booting the devnet at the fork
+block's timestamp makes `block.timestamp - lastUpdateTimestamp` underflow and
+reverts every adapter call — the same failure `snapshot-fork.sh` step "3-pre"
+already documents and works around. Anchoring genesis to `captured_at` instead
+avoids the underflow but puts the beacon genesis in the past by the pin's full
+age, which Lighthouse would have to traverse as empty slots before producing a
+block. Refreshing the pin is the supported way to keep the delta small.
+
+### Refreshing the pin
+
+```bash
+RMPC_FORK_RPC_URL=<Base archive RPC> scripts/devnet/snapshot-fork.sh
+```
+
+then realign `testing/ethereum-testnet/config/fork-block.json`
+(`block_number`, `block_hash`), regenerate
+`testing/fixtures/fork-state/genesis-alloc.json` with
+`smoke-test-genesis-ingester`, and recapture
+`testing/ethereum-testnet/config/expected-prices.json`.
+
+`RMPC_FORK_RPC_URL` is not optional in practice. The script's default,
+`https://base-rpc.publicnode.com`, is a pruned node: it serves state for only
+about 128 blocks (~4 minutes on Base) and answers anything older with
+"Archive requests require a personal token". A capture session runs far longer
+than that against a fixed pinned block, so the default endpoint cannot finish
+one. Several public Base endpoints do serve archive state — `mainnet.base.org`
+and `base-mainnet.public.blastapi.io` were both verified to fork a 48-day-old
+block under Anvil — so a refresh does not strictly require a keyed provider,
+though issue #1239 remains the right fix for CI.
+
 ## Troubleshooting
 
 - **Port 8545 already in use.** Another devnet instance is running.

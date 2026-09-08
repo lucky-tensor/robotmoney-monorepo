@@ -155,3 +155,28 @@ jobs:
           else
             gh issue create --repo "$REPO" --title "$title" --body "$body" --label bug
           fi
+
+      # MUST STAY LAST, AND MUST KEEP `if: ${{ !cancelled() }}` (issue #1386).
+      #
+      # This step is expected to FAIL for as long as the pin is stale — that
+      # redness is the whole point. But a failing step makes Actions skip every
+      # step after it, so placing it any earlier silently stops the #1235
+      # regression tests, the drift alarm, and the drift tracking-issue step
+      # from ever running again — re-creating the exact "script no workflow
+      # invokes, so it can neither pass nor fail" defect issue #1235 closed.
+      # Last position keeps the pin-age failure as the job's red signal without
+      # preempting anything; `!cancelled()` keeps it reporting even when an
+      # earlier step (e.g. the harness-classification `exit 1`) has already
+      # failed, so a stale pin can never be masked by an unrelated failure.
+      #
+      # The pull-request path only WARNS about a stale pin (see
+      # scripts/devnet/check-fork-manifest.sh) so a maintenance signal cannot
+      # red the merge queue. Nightly is where failing is affordable: the
+      # devnet's chain clock is wall-clock now while the forked
+      # Aave/Compound/Morpho state is frozen at the pin, so the simulated
+      # accrual interval grows every day the fixture is not refreshed. 30 days
+      # is one calendar month past the fixture's own historical 1-4 week
+      # refresh cadence.
+      - name: Fork pin staleness gate (issue #1386)
+        if: ${{ !cancelled() }}
+        run: scripts/devnet/check-fork-pin-age.sh --max-age-days 30

@@ -204,6 +204,14 @@ jobs:
         # on it against the real fixture.
         run: scripts/devnet/check-fork-state-digest-selftest.sh
 
+      - name: Fork pin-age gate behaviour self-test (issue #1386)
+        # Offline, no network/Docker: drives scripts/devnet/check-fork-pin-age.sh
+        # against synthetic manifests so every branch of the gate (fresh, past
+        # the warn cadence, past --max-age-days, malformed input) is proven to
+        # behave before the real fixture is judged by it. A staleness gate that
+        # is never exercised is the same silence that let the pin reach 48 days.
+        run: scripts/devnet/check-fork-pin-age-selftest.sh
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:

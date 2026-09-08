@@ -41,6 +41,19 @@ STATE_MANIFEST="$REPO_ROOT/testing/fixtures/fork-state/CURRENT.json"
 echo "[check-fork-manifest] verifying fork-state blob integrity (state_sha256)"
 "$REPO_ROOT/scripts/devnet/fork-state-digest.sh" verify "$SNAPSHOT" "$STATE_MANIFEST"
 
+# Pin-age visibility (issue #1386). The digest check above proves the blob
+# matches its manifest; it says nothing about whether the pin still describes
+# anything like the present. The devnet's chain clock is wall-clock now while
+# the forked Aave/Compound/Morpho state is frozen at the pin, so the simulated
+# accrual interval grows by a day per day — and until now nothing reported it,
+# which is how the pin reached 48 days unnoticed. Reported (and annotated past
+# the refresh cadence) on every run, but deliberately NOT a hard failure here:
+# this script is on the pull-request path and a stale pin is a maintenance
+# signal, not a reason to red the merge queue. The hard gate lives in the
+# nightly live-base-fork-drift job, which passes --max-age-days.
+echo "[check-fork-manifest] reporting fork pin age"
+"$REPO_ROOT/scripts/devnet/check-fork-pin-age.sh"
+
 # Build the validator + ingester binaries once. Reuses the smoke-test
 # crate's existing cargo cache.
 echo "[check-fork-manifest] cargo build (smoke-test binaries)"
