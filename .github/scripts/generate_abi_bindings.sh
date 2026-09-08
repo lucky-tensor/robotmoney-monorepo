@@ -16,8 +16,9 @@
 # THE TWO BLOCKS BELOW ARE MACHINE-READ (issue #1346)
 # `.github/scripts/check_abi_binding_inventory.py`, run by suite-16, parses them.
 # It fails CI when an ABI file exists on disk but appears in neither block, when
-# an un-gated entry cites no tracking issue, or when the issue it cites is not
-# open. Editing the prose is fine; keep the `#   <path> ...` line shape.
+# an un-gated entry cites no tracking issue, when the issue it cites is not
+# open, or when a fully-generated entry is not written below. Editing the prose
+# is fine; keep the `#   <path> ...` line shape.
 #
 # FULLY-GENERATED OUTPUTS (CI drift-gated)
 #   clients/rust-payment-client/abi/Erc20.json          ← TestERC20 (mint/burn)
