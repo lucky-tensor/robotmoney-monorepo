@@ -4,7 +4,7 @@ title: "RobotMoneyVaultRouteDepositTest"
 
 # RobotMoneyVaultRouteDepositTest
 
-[Git Source](https://github.com/robotmoney/robotmoney-core/blob/7ad48f9065de8dddbe6591f3819711a68aaed6b6/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/bc45d15d9b60824c9fb575df196f7c638a354620/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
 
 **Inherits:** Test
 
@@ -402,6 +402,28 @@ check must only ever be computed from a real read.
 
 ```solidity
 function test_routeDeposit_passTwoRereadsAfterPassOneAllocated() public;
+```
+
+<a id="test_routedeposit_shareroundingduststaysidleratherthancostingasecondround"></a>
+
+### test_routeDeposit_shareRoundingDustStaysIdleRatherThanCostingASecondRound
+
+A share-priced adapter reports back slightly less than was
+deployed into it, so pass 1's cap-headroom score under-states the
+real headroom by that dust and pass 2 is skipped. The dust stays
+idle rather than costing a second full round of adapter reads.
+
+<i>
+
+This is the unit-test twin of
+`VaultForkRegressions.test_fork_unroutedDeposit_emitsEventAndStaysIdle`,
+where pass 2's entire contribution to a cap-bound deposit was ONE wei.
+Pinned here so the trade does not depend on fork CI to stay honest.
+
+</i>
+
+```solidity
+function test_routeDeposit_shareRoundingDustStaysIdleRatherThanCostingASecondRound() public;
 ```
 
 <a id="test_gas_balancedvaultdeposit"></a>

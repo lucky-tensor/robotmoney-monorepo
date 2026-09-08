@@ -47,6 +47,11 @@ contract ReadCountingAdapter is IStrategyAdapter {
     /// @dev Slot 0 — read ONLY by `totalAssets()`. See `PROBE_SLOT` in the test.
     uint256 private probe;
 
+    /// @dev Assets this adapter reports BELOW the USDC it actually holds, so a
+    ///      test can model a share-priced adapter whose `convertToAssets` rounds
+    ///      down (`MorphoAdapter`). `0` reports at par.
+    uint256 private underReport;
+
     /// @dev Gas each `totalAssets()` call should burn, so a test can price the
     ///      read at what a real protocol read costs (`MetaMorpho.totalAssets()`
     ///      measures 201 145 gas). `0` keeps the adapter cheap.
@@ -75,6 +80,10 @@ contract ReadCountingAdapter is IStrategyAdapter {
         readCostGas = gas_;
     }
 
+    function setUnderReport(uint256 dust) external {
+        underReport = dust;
+    }
+
     /// @inheritdoc IStrategyAdapter
     function deploy(uint256) external onlyVault {}
 
@@ -94,7 +103,9 @@ contract ReadCountingAdapter is IStrategyAdapter {
             // fold this spin away.
             while (start - gasleft() < cost) {}
         }
-        return USDC.balanceOf(address(this)) + probe;
+        uint256 held = USDC.balanceOf(address(this)) + probe;
+        uint256 dust = underReport;
+        return held > dust ? held - dust : 0;
     }
 
     /// @inheritdoc IStrategyAdapter
@@ -522,6 +533,56 @@ contract RobotMoneyVaultRouteDepositTest is Test {
             (total * 1_000) / MAX_BPS,
             "capped adapter above its capBps"
         );
+    }
+
+    /// @notice A share-priced adapter reports back slightly less than was
+    ///         deployed into it, so pass 1's cap-headroom score under-states the
+    ///         real headroom by that dust and pass 2 is skipped. The dust stays
+    ///         idle rather than costing a second full round of adapter reads.
+    ///
+    /// @dev This is the unit-test twin of
+    ///      `VaultForkRegressions.test_fork_unroutedDeposit_emitsEventAndStaysIdle`,
+    ///      where pass 2's entire contribution to a cap-bound deposit was ONE wei.
+    ///      Pinned here so the trade does not depend on fork CI to stay honest.
+    function test_routeDeposit_shareRoundingDustStaysIdleRatherThanCostingASecondRound() public {
+        vm.startPrank(admin);
+        vault.setAdapterCap(0, 5_000);
+        vault.removeAdapter(1);
+        vault.removeAdapter(2);
+        vm.stopPrank();
+
+        // Model MetaMorpho: report one wei less than was deployed.
+        adapters[0].setUnderReport(1);
+
+        uint256 depositAmt = 100_000 * ONE_USDC;
+
+        vm.recordLogs();
+        _routeAlone(depositAmt);
+
+        // Half the deposit is over the 5000 bps cap and stays idle, plus the one
+        // wei of share-rounding dust pass 2 would have placed.
+        assertEq(usdc.balanceOf(address(vault)), depositAmt / 2, "unexpected idle balance");
+
+        // Pass 2 did not run: one round of reads only.
+        assertEq(
+            _reads(address(adapters[0])),
+            READS_PER_ADAPTER_ONE_ROUND,
+            "pass 2 ran to place share-rounding dust"
+        );
+
+        // The cap is still respected against the adapter's REAL reported assets.
+        uint256 total = vault.totalAssets();
+        assertLe(adapters[0].totalAssets(), (total * 5_000) / MAX_BPS, "adapter above its capBps");
+
+        uint256 unrouted;
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter == address(vault) && logs[i].topics[0] == UnroutedDeposit.selector)
+            {
+                unrouted = abi.decode(logs[i].data, (uint256));
+            }
+        }
+        assertEq(unrouted, depositAmt / 2, "UnroutedDeposit must report the idle USDC");
     }
 
     // ─── Recorded gas for the ordinary balanced-vault deposit path ───────────

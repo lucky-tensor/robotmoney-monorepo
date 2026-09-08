@@ -5,7 +5,7 @@ description: "`setProbe` exists so the slot is provably writable and the optimiz
 
 # ReadCountingAdapter
 
-[Git Source](https://github.com/robotmoney/robotmoney-core/blob/7ad48f9065de8dddbe6591f3819711a68aaed6b6/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/bc45d15d9b60824c9fb575df196f7c638a354620/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
 
 **Inherits:** [IStrategyAdapter](/contracts/interfaces/interface.IStrategyAdapter)
 
@@ -49,6 +49,20 @@ Slot 0 — read ONLY by `totalAssets()`. See `PROBE_SLOT` in the test.
 
 ```solidity
 uint256 private probe;
+```
+
+### underReport
+
+<i>
+
+Assets this adapter reports BELOW the USDC it actually holds, so a
+test can model a share-priced adapter whose `convertToAssets` rounds
+down (`MorphoAdapter`). `0` reports at par.
+
+</i>
+
+```solidity
+uint256 private underReport;
 ```
 
 ### readCostGas
@@ -117,6 +131,20 @@ function setReadCostGas(uint256 gas_) external;
 | Name | Type | Description |
 | ---- | ---- | ----------- |
 | gas_ | `uint256` |  |
+
+<a id="setunderreport-uint256"></a>
+
+### setUnderReport
+
+```solidity
+function setUnderReport(uint256 dust) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| dust | `uint256` |  |
 
 <a id="deploy-uint256"></a>
 

@@ -525,15 +525,29 @@ contract RobotMoneyVault is ERC4626, AdminFloorAccessControlCounter, ReentrancyG
         // 3334/3333/3333) floors to slightly LESS than NAV, so a few wei of every
         // deposit are permanently unplaceable — and re-reading every adapter to
         // rediscover that was the second round of `totalAssets()` calls #1391 is
-        // about. Skipping pass 2 here leaves exactly the USDC pass 2 would have
-        // left, and still emits `UnroutedDeposit`.
+        // about.
         //
-        // `capHeadroom` models an allocated adapter's new balance as
-        // `currentBalance + allocation`, exact for the 1:1 lending adapters this
-        // vault family routes to (`deploy` moves USDC at par, with no min-out
-        // leg). It only ever gates whether pass 2 is ATTEMPTED — pass 2 re-reads
-        // and re-checks `capBps` against a real balance before placing anything,
-        // so an inexact model can never widen a cap, only leave USDC idle.
+        // `capHeadroom` scores an allocated adapter as holding
+        // `currentBalance + allocation`. That is an UPPER bound on what it really
+        // holds: `deploy` moves USDC at par, but a share-priced adapter converts
+        // it back down (`MorphoAdapter` is `convertToAssets`, which rounds down),
+        // so real assets are at most the amount deployed. `capHeadroom` is
+        // therefore a LOWER bound on real headroom, which fixes the direction of
+        // the trade:
+        //
+        //   * it can never over-state headroom, so pass 2 is never entered on a
+        //     false premise, and the cap is never widened — pass 2 re-reads and
+        //     re-checks `capBps` against a real balance before placing anyway;
+        //   * it can under-state headroom by the adapters' share-rounding dust,
+        //     so skipping pass 2 may leave a few wei idle that a second full
+        //     round of `totalAssets()` would have placed.
+        //
+        // The second is the deliberate trade: on a fork, pass 2's entire
+        // contribution to a `capBps`-bound deposit was ONE wei
+        // (`VaultForkRegressions.test_fork_unroutedDeposit_emitsEventAndStaysIdle`),
+        // bought with a full round of protocol reads. That wei stays idle, is
+        // still counted by `totalAssets`, still reported by `UnroutedDeposit`, and
+        // is routed by the next deposit or `rebalance`.
         if (remaining > 0 && capHeadroom > 0) {
             for (uint256 i = 0; i < len && remaining > 0; i++) {
                 if (!adapters[i].active) continue;
