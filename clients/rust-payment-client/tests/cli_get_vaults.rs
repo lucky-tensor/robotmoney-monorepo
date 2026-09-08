@@ -482,7 +482,7 @@ async fn get_vault_address_unregistered_exits_nonzero() {
         .expect_at_least(0)
         .create_async()
         .await;
-    // getVault reverts (VaultNotRegistered)
+    // getVault reverts (the contract's error is NotRegistered())
     server
         .mock("POST", "/")
         .match_body(match_eth_call_selector(&selector_hex_of::<

@@ -87,6 +87,14 @@ on:
       # either must re-run this suite.
       - "clients/rust-payment-client/abi/**"
       - "services/explorer-indexer/src/abi.rs"
+      # Issue #1362: TimelockController.json is generated from
+      # lib/openzeppelin-contracts/contracts/governance/TimelockController.sol,
+      # the first drift-gated binding whose Solidity source is NOT under
+      # contracts/. Without these two entries a submodule bump would change the
+      # canonical ABI without ever running this suite, and the drift would only
+      # surface as a red `dev` after merge instead of a red PR before it.
+      - "lib/**"
+      - ".gitmodules"
   workflow_dispatch:
 
 # CI velocity tiers (issue #600): cancel superseded PR runs so a re-push does

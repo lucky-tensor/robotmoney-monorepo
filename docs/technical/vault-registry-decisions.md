@@ -206,6 +206,27 @@ safety-critical fields).
 
 ### 3.5 Event signatures
 
+> **SUPERSEDED BY THE SHIPPED CONTRACT — these signatures are NOT what
+> `VaultRegistry.sol` emits.** Same defect as §3.4 above, one heading down, and
+> the same one that produced #1348 and #1362. As shipped (#329):
+>
+> ```solidity
+> event VaultRegistered(address indexed vault, string name, address indexed asset);
+> event VaultStatusChanged(
+>     address indexed vault, VaultStatus indexed newStatus, uint256 timestamp
+> );
+> ```
+>
+> — `contracts/VaultRegistry.sol:146` and `:152-154`. Differences that change
+> topic-0 and therefore break any consumer written from the block below:
+> `VaultRegistered` carries `asset` (indexed) instead of
+> `riskLabel`/`depositCap`/`registeredAt`; `VaultStatusChanged` has no
+> `oldStatus`, indexes `newStatus`, and its timestamp is `uint256`, not `uint64`.
+> The indexer's real topic-0 hashes are re-derived from the Foundry artifacts on
+> every PR by suite-16's third gate, so the indexer is protected — this document
+> is not. Read the contract, not the block below. Kept as the historical record
+> of the decision, not as a contract.
+
 The following two events are the canonical indexable events for the Vault
 registry phase. They must appear verbatim in `VaultRegistry.sol`.
 
