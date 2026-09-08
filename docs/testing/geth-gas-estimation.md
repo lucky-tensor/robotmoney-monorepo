@@ -108,12 +108,60 @@ reverting deposit needed only ~6% more gas than the first), and on the devnet �
 where the gas price is a few hundred thousand wei — the larger gas *limit* costs
 nothing meaningful against each depositor's 0.05 ETH float.
 
+## Why a bare estimate has no margin at all (issue #1388)
+
+The two cases above are both "state moved between estimate and execution". There
+is a second, sharper reason never to forward a bare estimate, and it holds even
+when nothing moves.
+
+`eth_estimateGas` binary-searches for the **smallest outer limit at which the
+transaction succeeds**. Under EIP-150 a nested call receives only 63/64 of the
+gas remaining at its depth, and those reserved 1/64 slices compound down the
+call stack — they are counted against the outer limit but are unreachable by the
+frames below. So the estimator's answer is, by construction, the value at which
+the *deepest* frame has exactly zero left over, no matter how much apparent
+headroom the outer limit shows.
+
+Measured against the committed fork fixture
+(`testing/fixtures/fork-state/CURRENT.anvil-state`, anvil, no network) for the
+5 USDC `RobotMoneyVault.deposit` that `registry-receipt-rows.spec.ts` and
+`multi-vault-withdrawal.spec.ts` sign:
+
+| quantity | value |
+| --- | --- |
+| `eth_estimateGas` | 1,415,397 |
+| smallest limit that succeeds (manual binary search) | 1,415,397 |
+| gas actually consumed on success | 1,225,785 |
+| difference | 189,612 (13.4% of the limit) |
+
+Those 189,612 gas look like a comfortable buffer and are not spendable. Send the
+same transaction with 1,225,785 — the amount it demonstrably uses — and the
+`MetaMorpho.totalAssets()` staticcall three frames inside `_routeDeposit` runs
+out of gas.
+
+The practical consequence: **`estimate` being much larger than `gasUsed` is a
+symptom of a deeply nested call, not of headroom.** Interleave anything at all
+between the estimate and the send — in CI, the redeem at
+`multi-vault-withdrawal.spec.ts` — and the transaction reverts out of gas. On
+the fixture that reproduced 10/10 with the bare estimate and 0/10 with the 1.5x
+buffer, same state, same calldata, only the gas limit differing.
+
+`gasUsed ≈ gas` on the receipt is the unambiguous signature of this failure;
+`docs/development/false-green-shapes.md` covers why it must never be silent.
+
 ## Guidance for harness authors
 
 - Any helper that signs a devnet transaction whose cost is **state-dependent**
   (vault deposits/withdrawals, adapter rebalances, router splits) must buffer
   gas. Use `Fixture::cast_send`; do not call `cast send` without a buffered
   `--gas-limit`.
+- In the dapp e2e suite there are two signing paths and both buffer by 1.5x:
+  the injected mock wallet (`clients/dapp/tests/e2e/helpers/wallet.ts`) for
+  browser-driven flows, and `sendBufferedTransaction`
+  (`clients/dapp/tests/e2e/helpers/gas.ts`) for specs that sign setup
+  transactions directly. A bare `walletClient.sendTransaction()` in a
+  `tests/e2e/**/*.spec.ts` file is a lint error, because viem fills the missing
+  `gas` field with the unbuffered estimate.
 - Never treat a `cast send` exit code as proof of execution success — always
   assert `status == 0x1`.
 - If a devnet test is flaky only under concurrency, suspect gas estimation

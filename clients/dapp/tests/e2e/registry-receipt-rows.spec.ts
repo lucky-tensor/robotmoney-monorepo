@@ -52,6 +52,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { loadEndpoints, type DevnetEndpoints } from "./helpers/devnet";
 import { diagnoseRevertedDeposit } from "./helpers/deposit-diagnostics";
+import { sendBufferedTransaction } from "./helpers/gas";
 import { openDapp } from "./helpers/wallet";
 import { erc20Abi, vaultAbi } from "../../src/lib/abi";
 
@@ -128,14 +129,23 @@ async function waitUntil<T>(predicate: () => Promise<T | null>, description: str
  * routing state at that same block. It runs ONLY on the failure path, and is
  * total (every section degrades to an "unavailable" line), so it cannot
  * itself redden a passing run.
+ *
+ * Both transactions are signed through `sendBufferedTransaction`, never through
+ * a bare `wallet.sendTransaction()`. This spec signs directly rather than
+ * through the injected mock wallet, so it inherits neither that wallet's 1.5x
+ * gas buffer nor `Fixture::cast_send`'s — and a bare `eth_estimateGas` result
+ * is the smallest limit at which the OUTERMOST frame succeeds, which leaves the
+ * `MetaMorpho.totalAssets()` staticcall three frames down with nothing spare
+ * under EIP-150's 63/64 rule. See `docs/testing/geth-gas-estimation.md` and
+ * issue #1388 for the measurements. This is robustness only: the deposit's
+ * ~1.4M gas cost is issue #1391, and buffering does not reduce it.
  */
 async function depositAsAdmin(endpoints: DevnetEndpoints, amount: bigint): Promise<void> {
   const account = privateKeyToAccount(endpoints.admin_private_key as Hex);
   const wallet = createWalletClient({ account, transport: http(endpoints.rpc_url) });
   const publicClient = createPublicClient({ transport: http(endpoints.rpc_url) });
 
-  const approveTx = await wallet.sendTransaction({
-    chain: null,
+  const approveTx = await sendBufferedTransaction(wallet, publicClient, {
     to: endpoints.usdc_addr as Address,
     data: encodeFunctionData({
       abi: erc20Abi,
@@ -154,8 +164,7 @@ async function depositAsAdmin(endpoints: DevnetEndpoints, amount: bigint): Promi
       `approve failure, not a registry-decode failure`,
   ).toBe("success");
 
-  const depositTx = await wallet.sendTransaction({
-    chain: null,
+  const depositTx = await sendBufferedTransaction(wallet, publicClient, {
     to: endpoints.vault_addr as Address,
     data: encodeFunctionData({
       abi: vaultAbi,

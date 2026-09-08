@@ -39,6 +39,7 @@
 import { test, expect } from "./helpers/fixtures";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  createPublicClient,
   createWalletClient,
   http,
   encodeFunctionData,
@@ -48,6 +49,7 @@ import {
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { loadEndpoints, type DevnetEndpoints } from "./helpers/devnet";
+import { sendBufferedTransaction } from "./helpers/gas";
 import {
   injectWallet,
   connectInjectedWallet,
@@ -346,6 +348,12 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
       transport: http(endpoints.rpc_url),
       chain: adminChain,
     });
+    // Both admin sends below go through `sendBufferedTransaction`, which pads
+    // `eth_estimateGas` by the harness's 1.5x. A bare estimate is the smallest
+    // limit at which the outermost frame succeeds and so carries no usable
+    // margin for anything nested — see `docs/testing/geth-gas-estimation.md`
+    // and issue #1388.
+    const adminPublicClient = createPublicClient({ transport: http(endpoints.rpc_url) });
 
     // setVotingPower(freshAddr, FAUCET_DRIP_AMOUNT_RM)
     const setVpData = encodeFunctionData({
@@ -353,7 +361,7 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
       functionName: "setVotingPower",
       args: [freshAddr, FAUCET_DRIP_AMOUNT_RM],
     });
-    await adminWalletClient.sendTransaction({
+    await sendBufferedTransaction(adminWalletClient, adminPublicClient, {
       to: governanceAddr,
       data: setVpData,
       chain: adminChain,
@@ -373,7 +381,7 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
     });
     let proposalId: bigint;
     try {
-      await adminWalletClient.sendTransaction({
+      await sendBufferedTransaction(adminWalletClient, adminPublicClient, {
         to: governanceAddr,
         data: proposeData,
         chain: adminChain,
