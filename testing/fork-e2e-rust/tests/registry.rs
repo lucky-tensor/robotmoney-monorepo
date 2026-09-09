@@ -20,11 +20,18 @@
 //!
 //! The rmpc binary is compiled once (via `cargo build --bin rmpc`) and
 //! reused for the `get-vaults` round-trip assertion. The VaultRegistry.sol
-//! ABI used here is the on-chain contract (contracts/VaultRegistry.sol);
-//! note that `rmpc get-vaults` uses a separate ABI binding (abi/VaultRegistry.json)
-//! whose `getVault` return type differs, so per-vault sub-reads are expected
-//! to produce a partial envelope. The tests only assert on fields that are
-//! guaranteed by `listVaults()`, which is ABI-compatible.
+//! ABI used here is the on-chain contract (contracts/VaultRegistry.sol).
+//!
+//! Until issue #1362, `rmpc get-vaults` bound to an `abi/VaultRegistry.json`
+//! whose `getVault` return type had drifted to a nine-field `VaultRecord` no
+//! deployed contract returns, so the per-vault sub-read always failed and the
+//! envelope was always partial. This file said so and asserted only on the
+//! vault address — a field that comes from `listVaults()` and is populated even
+//! when every `getVault` decode fails, so the workaround made these tests
+//! insensitive to the very defect they were closest to observing. The
+//! `getVault`-derived fields are now asserted here against real registered
+//! state, which is the only live-chain check in CI that can catch that drift
+//! recurring.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -313,22 +320,49 @@ fn registry_register_list() {
     let cfg = write_rmpc_config(&tmp, &fx.rpc_url, fx.chain_id, registry_addr);
     let v = run_get_vaults(&cfg);
 
-    // The envelope must contain at least one vault entry with our address.
-    // Note: rmpc's VaultRegistry ABI differs from the on-chain contract's
-    // getVault() signature, so per-vault detail sub-reads may fail (partial=true).
-    // We only assert on the vault address, which comes from listVaults().
     let vaults_json = v["data"]["vaults"]
         .as_array()
         .expect("data.vaults must be a JSON array");
-    let found = vaults_json.iter().any(|e| {
-        e["address"]
+    let entry = vaults_json
+        .iter()
+        .find(|e| {
+            e["address"]
+                .as_str()
+                .map(|s| s.eq_ignore_ascii_case(&format!("{fake_vault:#x}")))
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "rmpc get-vaults: vault {fake_vault:#x} not found in data.vaults; envelope:\n{v:#}"
+            )
+        });
+
+    // These four come from decoding the live `getVault` response, so they are
+    // what discriminates a working ABI binding from a drifted one (issue
+    // #1362). `address` alone does not: it comes from `listVaults()` and is
+    // filled in even when the `getVault` decode fails outright.
+    assert_eq!(
+        entry["name"], "Robot Money USDC",
+        "rmpc get-vaults did not decode VaultMetadata.name from the live \
+         registry — abi/VaultRegistry.json has drifted from VaultRegistry.sol \
+         again (issue #1362); envelope:\n{v:#}"
+    );
+    assert_eq!(
+        entry["asset"]
             .as_str()
-            .map(|s| s.eq_ignore_ascii_case(&format!("{fake_vault:#x}")))
-            .unwrap_or(false)
-    });
+            .expect("asset must be a string")
+            .to_lowercase(),
+        format!("{:#x}", rmpc_fork_e2e::addresses::USDC),
+        "rmpc get-vaults decoded the wrong VaultMetadata.asset; envelope:\n{v:#}"
+    );
+    assert_eq!(
+        entry["status"], "active",
+        "a freshly registered vault must decode as active; envelope:\n{v:#}"
+    );
     assert!(
-        found,
-        "rmpc get-vaults: vault {fake_vault:#x} not found in data.vaults; envelope:\n{v:#}"
+        entry["registered_at"].as_u64().unwrap_or(0) > 0,
+        "VaultMetadata.registeredAt must decode to the registration block \
+         timestamp, not 0; envelope:\n{v:#}"
     );
     eprintln!("[registry_register_list] rmpc get-vaults passed");
 }
@@ -527,6 +561,20 @@ fn registry_status_change() {
         vault_addr_in_output,
         format!("{fake_vault:#x}"),
         "rmpc get-vaults vault address mismatch after status change"
+    );
+    // The status the CLI reports must be the one the registry now holds — this
+    // is the second live-chain assertion on a `getVault`-decoded field (issue
+    // #1362), and the only one that also covers the status output, which is
+    // `getVault`'s *second* top-level return value rather than a struct member.
+    assert_eq!(
+        vaults_json[0]["status"], "paused",
+        "rmpc get-vaults must report the paused status it just read from the \
+         live registry; envelope:\n{v:#}"
+    );
+    assert_eq!(
+        vaults_json[0]["name"], "Test Vault",
+        "rmpc get-vaults must decode VaultMetadata.name after a status change; \
+         envelope:\n{v:#}"
     );
 
     eprintln!("[registry_status_change] passed");

@@ -262,11 +262,14 @@ async fn call_cadence_params(
     let r = RouterGovernance::cadenceParamsCall::abi_decode_returns(&out, true).map_err(|e| {
         crate::errors::RmpcError::ErrRpcDecode(format!("cadenceParams abi decode: {e}"))
     })?;
+    // Underscore-prefixed because that is how `RouterGovernance.sol` names
+    // these return parameters, and the binding is now generated straight from
+    // the Foundry artifact rather than hand-trimmed (issue #1362).
     Ok((
-        r.votingPeriod,
-        r.executionDelay,
-        r.quorumThreshold,
-        r.totalVotingPower,
+        r._votingPeriod,
+        r._executionDelay,
+        r._quorumThreshold,
+        r._totalVotingPower,
     ))
 }
 

@@ -22,19 +22,21 @@
 # FULLY-GENERATED OUTPUTS (CI drift-gated)
 #   clients/rust-payment-client/abi/Erc20.json          ← TestERC20 (mint/burn)
 #   clients/rust-payment-client/abi/RobotMoneyGateway.json
+#   clients/rust-payment-client/abi/VaultRegistry.json
+#   clients/rust-payment-client/abi/PortfolioRouter.json
+#   clients/rust-payment-client/abi/RouterGovernance.json
+#   clients/rust-payment-client/abi/TimelockController.json
+#   clients/rust-payment-client/abi/InvestmentCommitteePolicy.json
+#   clients/rust-payment-client/abi/ConsensusRecommendationReceipt.json
 #   clients/dapp/src/lib/abi.generated.ts
 #
 # UN-GATED HAND-MAINTAINED FILES (each MUST cite an OPEN tracking issue)
-# Measured against the Foundry artifacts in #1346: only two of these are
-# actually drifted; the rest are partial excerpts that could be regenerated.
-# All seven are tracked by #1362, which stays open until they are.
-#   clients/rust-payment-client/abi/MockVault.json — adds paused(), absent from the artifact; rmpc reads real vaults through this test fixture's ABI (tracking issue #1362)
-#   clients/rust-payment-client/abi/PortfolioRouter.json — partial excerpt, 5 of 78 entries, no drift (tracking issue #1362)
-#   clients/rust-payment-client/abi/RouterGovernance.json — partial excerpt, 17 of 76 entries, no drift (tracking issue #1362)
-#   clients/rust-payment-client/abi/VaultRegistry.json — stale nine-field VaultRecord getVault; breaks rmpc get-vaults (tracking issue #1362)
-#   clients/rust-payment-client/abi/ConsensusRecommendationReceipt.json — partial excerpt, only the reads `rmpc governance draft-proposal` needs (tracking issue #1362)
-#   clients/rust-payment-client/abi/InvestmentCommitteePolicy.json — signature-equivalent to the artifact; regeneratable today (tracking issue #1362)
-#   clients/rust-payment-client/abi/TimelockController.json — partial excerpt, 16 of 44 entries, no drift (tracking issue #1362)
+# #1346 measured all seven un-gated files against their Foundry artifacts and
+# #1362 acted on that measurement: six were regenerated and moved into the
+# drift-gated block above. Only `MockVault.json` remains, and its divergence is
+# not drift — it is an open product question that #1362 was explicitly scoped
+# not to pre-empt.
+#   clients/rust-payment-client/abi/MockVault.json — adds paused(), absent from the artifact; rmpc reads real deployed vaults through this "TEST FIXTURE only" contract's ABI (contracts/gateway/MockVault.sol:14). Whether the clients should instead bind to a compiler-owned contracts/interfaces/IVault.sol is #1286's Q3, which owns the decision and the follow-on work; answering it resolves this file (tracking issue #1286)
 #
 # WHY `ProtocolAssetVault` IS NOT GENERATED HERE (issue #1346 AC4)
 # The dapp's `BASKET_VAULT_SHORTLIST_ABI` names both basket vaults, so both were
@@ -81,6 +83,25 @@ echo "==> Generating Rust ABI JSON files (drift-gated)..."
 # Erc20.json maps to TestERC20 (adds mint/burn used by the test fixture)
 extract_abi "$OUT/TestERC20.sol/TestERC20.json"                  "$RUST_ABI/Erc20.json"
 extract_abi "$OUT/RobotMoneyGateway.sol/RobotMoneyGateway.json"  "$RUST_ABI/RobotMoneyGateway.json"
+
+# Issue #1362: these six were hand-trimmed excerpts of the same artifacts, and
+# one of them (VaultRegistry) had silently drifted into a shape no deployed
+# contract returns. They are now full artifact ABIs like the two above.
+#
+# NOTE FOR WHOEVER ADDS THE NEXT ONE: a full artifact ABI names the declaring
+# contract of every struct it borrows, so `sol!` emits a module per foreign
+# namespace — PortfolioRouter.json carries `struct VaultRegistry.VaultMetadata`.
+# `clients/rust-payment-client/src/gateway/mod.rs` expands each binding inside
+# its own private module for exactly that reason; expand a new one at file
+# scope and the crate stops compiling on a duplicate-module error.
+extract_abi "$OUT/VaultRegistry.sol/VaultRegistry.json"          "$RUST_ABI/VaultRegistry.json"
+extract_abi "$OUT/PortfolioRouter.sol/PortfolioRouter.json"      "$RUST_ABI/PortfolioRouter.json"
+extract_abi "$OUT/RouterGovernance.sol/RouterGovernance.json"    "$RUST_ABI/RouterGovernance.json"
+extract_abi "$OUT/TimelockController.sol/TimelockController.json" "$RUST_ABI/TimelockController.json"
+extract_abi "$OUT/InvestmentCommitteePolicy.sol/InvestmentCommitteePolicy.json" \
+                                                                 "$RUST_ABI/InvestmentCommitteePolicy.json"
+extract_abi "$OUT/ConsensusRecommendationReceipt.sol/ConsensusRecommendationReceipt.json" \
+                                                                 "$RUST_ABI/ConsensusRecommendationReceipt.json"
 
 # ---------------------------------------------------------------------------
 # 2. TypeScript generated ABI file for the dapp (fully generated — CI drift-gated)
@@ -196,11 +217,18 @@ echo ""
 echo "Drift-gated files (CI checks these):"
 echo "  clients/rust-payment-client/abi/Erc20.json"
 echo "  clients/rust-payment-client/abi/RobotMoneyGateway.json"
+echo "  clients/rust-payment-client/abi/VaultRegistry.json"
+echo "  clients/rust-payment-client/abi/PortfolioRouter.json"
+echo "  clients/rust-payment-client/abi/RouterGovernance.json"
+echo "  clients/rust-payment-client/abi/TimelockController.json"
+echo "  clients/rust-payment-client/abi/InvestmentCommitteePolicy.json"
+echo "  clients/rust-payment-client/abi/ConsensusRecommendationReceipt.json"
 echo "  clients/dapp/src/lib/abi.generated.ts"
 echo ""
-echo "NOTE: seven files under clients/rust-payment-client/abi/ are NOT regenerated"
-echo "      here — they are hand-maintained excerpts or carry entries the Rust"
-echo "      client needs at compile time. They are listed in this script's header"
-echo "      and every one of them must cite an OPEN tracking issue; the inventory"
-echo "      is enforced by .github/scripts/check_abi_binding_inventory.py in"
-echo "      suite-16. They are tracked by issue #1362."
+echo "NOTE: one file under clients/rust-payment-client/abi/ is NOT regenerated"
+echo "      here — MockVault.json, which adds a paused() the artifact does not"
+echo "      have and is the ABI rmpc reads real deployed vaults through. It is"
+echo "      listed in this script's header and must cite an OPEN tracking issue;"
+echo "      the inventory is enforced by"
+echo "      .github/scripts/check_abi_binding_inventory.py in suite-16. It is"
+echo "      tracked by issue #1286 (Q3: a compiler-owned IVault.sol)."

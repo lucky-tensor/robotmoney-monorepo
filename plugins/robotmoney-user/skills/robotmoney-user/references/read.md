@@ -55,8 +55,12 @@ Reads a `RobotMoneyVault` (ERC-4626) directly from chain.
 - **Registry mode** (`--address <0x...>`): looks up the vault in the
   `VaultRegistry` contract (requires `registry_address` in the operator config),
   then augments with live ERC-4626 state. Returns registry metadata (name,
-  risk_label, status, deposit_cap, exit_fee_bps, receipt_token_address) plus
-  live accounting. Exits non-zero when the address is not registered.
+  status, registered_at) plus live accounting (asset, decimals, total_assets,
+  total_supply, share_price). Exits non-zero when the address is not registered.
+  The registry stores only `VaultMetadata { name, asset, registeredAt }` and a
+  status, so there is no risk label, mandate, deposit cap, exit fee or separate
+  receipt token to return — caps and exit fees are live reads on the vault
+  contract, and every vault is its own ERC-4626 receipt token (issue #1362).
 
 ---
 

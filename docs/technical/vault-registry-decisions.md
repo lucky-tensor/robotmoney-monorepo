@@ -151,6 +151,18 @@ Four questions must be resolved before any implementation issue starts:
 
 ### 3.4 Minimum stable read ABI
 
+> **SUPERSEDED BY THE SHIPPED CONTRACT — do not bind a client to the `getVault`
+> shape below.** `VaultRegistry.sol` as implemented in #329 returns **two**
+> top-level outputs, `(VaultMetadata metadata, VaultStatus status)`, where
+> `VaultMetadata` is `{ string name; address asset; uint256 registeredAt; }`.
+> The nine-field `VaultRecord` in this section was never implemented: there is
+> no on-chain `riskLabel`, `mandate`, `receiptToken`, `depositCap` or
+> `exitFeeBps` anywhere in the registry. Clients that copied it could not decode
+> a real response — the dapp's copy was fixed in #1348 and rmpc's in #1362.
+> `listVaults()` and `vaultCount()` below are accurate as written. The rest of
+> this section is kept as the historical record of the decision, not as a
+> contract.
+
 The following three view functions constitute the stable read surface for `rmpc`,
 the Portfolio Router, the explorer indexer, and the dapp protocol layer. These
 signatures must not be modified without a superseding ADR.
@@ -193,6 +205,27 @@ historical data per `docs/architecture.md` §5.1 and the
 safety-critical fields).
 
 ### 3.5 Event signatures
+
+> **SUPERSEDED BY THE SHIPPED CONTRACT — these signatures are NOT what
+> `VaultRegistry.sol` emits.** Same defect as §3.4 above, one heading down, and
+> the same one that produced #1348 and #1362. As shipped (#329):
+>
+> ```solidity
+> event VaultRegistered(address indexed vault, string name, address indexed asset);
+> event VaultStatusChanged(
+>     address indexed vault, VaultStatus indexed newStatus, uint256 timestamp
+> );
+> ```
+>
+> — `contracts/VaultRegistry.sol:146` and `:152-154`. Differences that change
+> topic-0 and therefore break any consumer written from the block below:
+> `VaultRegistered` carries `asset` (indexed) instead of
+> `riskLabel`/`depositCap`/`registeredAt`; `VaultStatusChanged` has no
+> `oldStatus`, indexes `newStatus`, and its timestamp is `uint256`, not `uint64`.
+> The indexer's real topic-0 hashes are re-derived from the Foundry artifacts on
+> every PR by suite-16's third gate, so the indexer is protected — this document
+> is not. Read the contract, not the block below. Kept as the historical record
+> of the decision, not as a contract.
 
 The following two events are the canonical indexable events for the Vault
 registry phase. They must appear verbatim in `VaultRegistry.sol`.
