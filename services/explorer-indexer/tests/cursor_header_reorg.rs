@@ -18,7 +18,7 @@
 mod common;
 
 use alloy_primitives::Address;
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{db::CountTable, indexer::run_once, indexer::IndexerConfig, rpc::JsonRpc};
 
 /// Build the minimal stub block JSON for a given number, hash, parent_hash,
@@ -81,9 +81,7 @@ fn set_happy_responses(
 /// watched events.
 #[tokio::test]
 async fn cursor_header_persisted_for_no_event_target() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let stub = StubRpcServer::start().await;
     // tip=110, CONFIRMATIONS=5, so safe_head=105, target=105 (with end_block=105).
@@ -153,9 +151,7 @@ async fn cursor_header_persisted_for_no_event_target() {
 /// different points in time, we use two separate stub server instances.
 #[tokio::test]
 async fn reorg_below_no_event_cursor_deletes_stale_rows() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // ── Tick 1: pre-reorg chain ──────────────────────────────────────────
     // Block 100 hash = 0xaa…; block 105 (cursor) hash = 0xcc….
@@ -318,9 +314,7 @@ async fn reorg_below_no_event_cursor_deletes_stale_rows() {
 ///             delete_above_block(-1) must wipe the agent_deposit at block 8.
 #[tokio::test]
 async fn walk_back_does_not_accept_missing_hash_as_root() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // ── Tick 1: pre-reorg ────────────────────────────────────────────────
     let pre = StubRpcServer::start().await;

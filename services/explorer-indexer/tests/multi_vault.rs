@@ -19,7 +19,7 @@
 mod common;
 
 use alloy_primitives::{Address, U256};
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{
     abi::{IRouterGovernanceEvents, IVaultRegistryEvents},
     db::CountTable,
@@ -219,9 +219,7 @@ fn encode_vote_cast_log(
 /// every eth_call so that the test does not need real vault state.
 #[tokio::test]
 async fn two_registered_vaults_indexed_independently() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let registry_addr = Address::from([0xEEu8; 20]);
     let vault_a = Address::from([0xAAu8; 20]);
@@ -347,9 +345,7 @@ async fn two_registered_vaults_indexed_independently() {
 /// router_weight_snapshots with one row per vault leg.
 #[tokio::test]
 async fn weights_set_event_populates_router_weight_snapshots() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let router_addr = Address::from([0xFFu8; 20]);
     let vault_a = Address::from([0xAAu8; 20]);
@@ -428,9 +424,7 @@ async fn weights_set_event_populates_router_weight_snapshots() {
 /// AC-4a: ProposalCreated event populates governance_proposals.
 #[tokio::test]
 async fn proposal_created_event_populates_governance_proposals() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gov_addr = Address::from([0x99u8; 20]);
     let proposer = Address::from([0x11u8; 20]);
@@ -494,9 +488,7 @@ async fn proposal_created_event_populates_governance_proposals() {
 /// tick to verify the vote row is created.
 #[tokio::test]
 async fn vote_cast_event_populates_governance_votes() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gov_addr = Address::from([0x99u8; 20]);
     let voter = Address::from([0x44u8; 20]);

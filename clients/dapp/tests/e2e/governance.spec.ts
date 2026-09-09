@@ -25,9 +25,8 @@
  *
  * NOTE: If the dapp bundle served by the devnet does not yet include the
  * GovernancePanel in its tab tree the spec checks for `governance-panel`
- * via its data-testid and calls `test.skip()` with an explanatory
- * message rather than failing hard. This allows the CI suite to remain
- * green while the feature is fully integrated.
+ * via its data-testid and throws an error with an explanatory
+ * message.
  *
  * Canonical: issue #322, docs/development/smoke-test-design.md.
  */
@@ -128,13 +127,11 @@ test.describe("suite-10: GovernancePanel E2E", () => {
 
     const found = await navigateToGovernancePanel(page, endpoints);
     if (!found) {
-      test.skip(
-        true,
+      throw new Error(
         "GovernancePanel is not yet mounted in the dapp bundle (no tab-router-governance). " +
           "The panel ships as a standalone component in issue #322 — " +
           "wire it into the dapp tab tree to activate this spec.",
       );
-      return;
     }
 
     // Panel renders.
@@ -214,8 +211,7 @@ test.describe("suite-10: GovernancePanel E2E", () => {
 
     const found = await navigateToGovernancePanel(page, endpoints);
     if (!found) {
-      test.skip(true, "GovernancePanel not mounted in dapp bundle — see test (A) skip message.");
-      return;
+      throw new Error("GovernancePanel not mounted in dapp bundle — see test (A) skip message.");
     }
 
     // Vote button visible (may be disabled if simulate hasn't resolved).
@@ -260,8 +256,7 @@ test.describe("suite-10: GovernancePanel E2E", () => {
 
     const found = await navigateToGovernancePanel(page, endpoints);
     if (!found) {
-      test.skip(true, "GovernancePanel not mounted in dapp bundle — see test (A) skip message.");
-      return;
+      throw new Error("GovernancePanel not mounted in dapp bundle — see test (A) skip message.");
     }
 
     await expect(page.getByTestId("governance-no-proposal")).toBeVisible({ timeout: 15_000 });

@@ -26,7 +26,7 @@
 mod common;
 
 use alloy_primitives::{Address, U256};
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{
     abi::IVaultRegistryEvents,
     db::CountTable,
@@ -138,9 +138,7 @@ fn stub_block(number: u64, hash_byte: u8, parent_byte: u8) -> serde_json::Value 
 /// row into `vaults` within one poll tick.
 #[tokio::test]
 async fn vault_registered_event_inserts_vaults_row() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let registry_addr = Address::from([0xEEu8; 20]);
     let vault_addr = Address::from([0xAAu8; 20]);
@@ -229,9 +227,7 @@ async fn vault_registered_event_inserts_vaults_row() {
 /// the correct block.
 #[tokio::test]
 async fn vault_status_changed_updates_status() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let registry_addr = Address::from([0xEEu8; 20]);
     let vault_addr = Address::from([0xAAu8; 20]);
@@ -372,9 +368,7 @@ async fn vault_status_changed_updates_status() {
 /// then request logs for an address set that includes that vault address.
 #[tokio::test]
 async fn registered_vault_added_to_watched_address_set() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let registry_addr = Address::from([0xEEu8; 20]);
     let vault_addr = Address::from([0xA9u8; 20]);
@@ -483,9 +477,7 @@ async fn registered_vault_added_to_watched_address_set() {
 /// schema is in place.
 #[tokio::test]
 async fn migration_preserves_existing_vault_snapshots() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // Insert chain, contract, and a vault_snapshots row directly.
     fx.db.upsert_chain(8453, "base", "stub").await.unwrap();
@@ -532,9 +524,7 @@ async fn migration_preserves_existing_vault_snapshots() {
 ///             rows are unaffected.
 #[tokio::test]
 async fn reorg_deletes_snapshot_rows_but_preserves_vaults_rows() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let registry_addr = Address::from([0xEEu8; 20]);
     let vault_addr = Address::from([0xAAu8; 20]);

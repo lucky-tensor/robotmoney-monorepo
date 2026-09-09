@@ -16,7 +16,7 @@
 mod common;
 
 use alloy_primitives::{Address, U256};
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{
     abi::IVaultEvents,
     db::CountTable,
@@ -298,9 +298,7 @@ fn base_config(vault: Address) -> IndexerConfig {
 /// Test plan: `cargo test -p explorer-indexer -- adapter_allocation`
 #[tokio::test]
 async fn adapter_allocation_allocated_rows_written() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let vault_addr = Address::from([0xAAu8; 20]);
     let adapter_addr = Address::from([0xBBu8; 20]);
@@ -355,9 +353,7 @@ async fn adapter_allocation_allocated_rows_written() {
 /// Confirms VaultPulled rows are written to `adapter_allocations` (AC: adapter_allocation).
 #[tokio::test]
 async fn adapter_allocation_pulled_rows_written() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let vault_addr = Address::from([0xAAu8; 20]);
     let adapter_addr = Address::from([0xBBu8; 20]);
@@ -407,9 +403,7 @@ async fn adapter_allocation_pulled_rows_written() {
 /// The adapter and adapter_index columns must be NULL for Rebalanced events.
 #[tokio::test]
 async fn adapter_allocation_rebalanced_rows_written() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let vault_addr = Address::from([0xAAu8; 20]);
 
@@ -461,9 +455,7 @@ async fn adapter_allocation_rebalanced_rows_written() {
 /// Test plan: `cargo test -p explorer-indexer -- fee_charged`
 #[tokio::test]
 async fn fee_charged_rows_written() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let vault_addr = Address::from([0xAAu8; 20]);
     let owner = Address::from([0x11u8; 20]);
@@ -518,9 +510,7 @@ async fn fee_charged_rows_written() {
 /// with direction='deposit'.
 #[tokio::test]
 async fn erc4626_deposit_rows_written() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let vault_addr = Address::from([0xAAu8; 20]);
     let caller = Address::from([0x33u8; 20]);
@@ -576,9 +566,7 @@ async fn erc4626_deposit_rows_written() {
 /// stranding the burn alarm. The branches are now merged into one writer.
 #[tokio::test]
 async fn erc4626_withdraw_writes_both_transfer_and_history_rows() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let vault_addr = Address::from([0xAAu8; 20]);
     let caller = Address::from([0x33u8; 20]);

@@ -117,8 +117,7 @@ test("router-deposit: ProportionPreview numeric columns are right-aligned", asyn
   const previewTable = page.getByTestId("proportion-preview-table");
   // If the table is not present (no router vaults configured), skip gracefully.
   if (!(await previewTable.isVisible({ timeout: 10_000 }).catch(() => false))) {
-    test.skip();
-    return;
+    throw new Error("Proportion preview table not visible (no router vaults configured?). Cannot proceed with formatting checks.");
   }
 
   // Weight column (2nd) and USDC-leg column (3rd) should be right-aligned.
@@ -142,14 +141,10 @@ test("snapshot: balances panel renders consistently", async ({ page }) => {
   const snapshotDir = path.join(thisDir, "number-formatting.spec.ts-snapshots");
   const baselinePath = path.join(snapshotDir, "balances-panel-linux.png");
   if (!fs.existsSync(baselinePath)) {
-    test.info().annotations.push({
-      type: "note",
-      description:
-        "Screenshot baseline balances-panel-linux.png not yet committed. " +
-        "Run `playwright test --update-snapshots` and commit the generated file.",
-    });
-    test.skip();
-    return;
+    throw new Error(
+      "Screenshot baseline balances-panel-linux.png not yet committed. " +
+      "Run `playwright test --update-snapshots` and commit the generated file."
+    );
   }
 
   await injectWallet(page, {

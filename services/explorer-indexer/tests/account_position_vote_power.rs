@@ -21,7 +21,7 @@ mod common;
 
 use alloy_primitives::{Address, Bytes, B256, U256};
 use bigdecimal::BigDecimal;
-use common::try_pg_fixture;
+use common::pg_fixture;
 use explorer_indexer::abi::{IVaultEvents, Topics};
 use explorer_indexer::indexer::{handle_log, IndexerConfig};
 use explorer_indexer::rpc::LogEntry;
@@ -124,9 +124,7 @@ fn withdraw_log(
 /// table — and the `account_positions` view over it — stayed empty.
 #[tokio::test]
 async fn deposit_and_withdraw_populate_wallet_positions() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     let vault = Address::from([0xDDu8; 20]);
     let owner = Address::from([0x44u8; 20]);
@@ -209,9 +207,7 @@ async fn position_balance(
 /// `{col} + 1` per voter and would have read 2.
 #[tokio::test]
 async fn vote_tally_sums_power_not_voter_count() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     let gov = Address::from([0x99u8; 20]);
     let whale = Address::from([0x44u8; 20]);

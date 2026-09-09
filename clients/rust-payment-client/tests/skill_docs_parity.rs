@@ -556,10 +556,10 @@ fn cargo_metadata_resolves_repo_root() {
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .expect("git rev-parse --show-toplevel");
-    if !out.status.success() {
-        // Outside a git checkout (rare in CI sandboxes); skip.
-        return;
-    }
+    assert!(
+        out.status.success(),
+        "git rev-parse --show-toplevel failed (not a git repo?)"
+    );
     let git_root = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
     let resolved = repo_root();
     assert_eq!(

@@ -398,12 +398,10 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
       await sleep(POLL_INTERVAL_MS);
     }
     if (proposalId === 0n) {
-      test.skip(
-        true,
+      throw new Error(
         "No active proposal after 60 s — propose() may have reverted without an existing " +
           "proposal to fall back to. This is an on-chain state setup failure.",
       );
-      return;
     }
     console.log(`governance-fresh-account: proposalId=${proposalId}`);
 
@@ -421,12 +419,10 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
       await sleep(POLL_INTERVAL_MS);
     }
     if (assignedPower === 0n) {
-      test.skip(
-        true,
+      throw new Error(
         "setVotingPower did not take effect within 60 s (RouterGovernance may not accept " +
           "votes without queued power). This is an on-chain state setup failure, not a dapp UI regression.",
       );
-      return;
     }
 
     // ── 3. Open dapp with fresh EOA as the connected wallet ─────────────────
@@ -452,12 +448,10 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
 
     const ethDripBtn = page.getByTestId("faucet-eth-drip-button");
     if (!(await ethDripBtn.isVisible({ timeout: 15_000 }).catch(() => false))) {
-      test.skip(
-        true,
+      throw new Error(
         "faucet-eth-drip-button not present — dapp bundle may have been built without " +
           "Base ETH drip support (issue #466). Skipping fresh-account governance E2E.",
       );
-      return;
     }
     await expect(ethDripBtn).toBeEnabled({ timeout: 30_000 });
     await ethDripBtn.click();
@@ -470,12 +464,10 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
     // ── 4b. Faucet: drip RM tokens ───────────────────────────────────────────
     const rmDripBtn = page.getByTestId("faucet-rm-drip-button");
     if (!(await rmDripBtn.isVisible({ timeout: 15_000 }).catch(() => false))) {
-      test.skip(
-        true,
+      throw new Error(
         "faucet-rm-drip-button not present — dapp bundle may have been built without " +
           "VITE_RM_TOKEN_ADDRESS (issue #365). Skipping fresh-account governance E2E.",
       );
-      return;
     }
     await expect(rmDripBtn).toBeEnabled({ timeout: 30_000 });
     await rmDripBtn.click();
@@ -520,12 +512,10 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
       (await routerGovTab.isVisible({ timeout: 5_000 }).catch(() => false)) ||
       (await legacyGovTab.isVisible({ timeout: 2_000 }).catch(() => false));
     if (!tabFound) {
-      test.skip(
-        true,
+      throw new Error(
         "GovernancePanel is not yet mounted in the dapp bundle (no tab-router-governance). " +
           "Wire GovernancePanel into the dapp tab tree to activate this spec (see issue #322).",
       );
-      return;
     }
     if (await routerGovTab.isVisible().catch(() => false)) {
       await routerGovTab.click();
@@ -557,12 +547,10 @@ test.describe("fresh-account governance E2E — drip ETH + RM then vote (issue #
     // On this devnet RouterGovernance IS deployed, so simulate should resolve.
     const enabled = await voteBtn.isEnabled({ timeout: 30_000 }).catch(() => false);
     if (!enabled) {
-      test.skip(
-        true,
+      throw new Error(
         "governance-vote-button not enabled after 30s — simulate may have failed (e.g. " +
           "RouterGovernance reverted NoVotingPower). Check on-chain state.",
       );
-      return;
     }
 
     await voteBtn.click();
