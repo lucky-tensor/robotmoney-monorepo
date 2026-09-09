@@ -238,24 +238,56 @@ fn approve_usdc(
 
 /// Read `USDC.balanceOf(addr)` from `caller`'s perspective.
 fn usdc_balance_of(caller: &rmpc_fork_e2e::Account<'_>, usdc: Address, addr: Address) -> U256 {
-    let raw = caller
-        .call(usdc, &IUSDC::balanceOfCall { account: addr })
-        .expect("USDC.balanceOf");
-    if raw.len() < 32 {
-        return U256::ZERO;
-    }
-    U256::from_be_slice(&raw[..32])
+    balance_of_with_retry("USDC.balanceOf", || {
+        caller.call(usdc, &IUSDC::balanceOfCall { account: addr })
+    })
 }
 
 /// Read `vault.balanceOf(addr)` from `caller`'s perspective.
 fn vault_balance_of(caller: &rmpc_fork_e2e::Account<'_>, vault: Address, addr: Address) -> U256 {
-    let raw = caller
-        .call(vault, &IMockVault::balanceOfCall { account: addr })
-        .expect("vault.balanceOf");
-    if raw.len() < 32 {
-        return U256::ZERO;
+    balance_of_with_retry("vault.balanceOf", || {
+        caller.call(vault, &IMockVault::balanceOfCall { account: addr })
+    })
+}
+
+/// Read a balance after a transaction receipt, tolerating Geth devnet's brief
+/// post-receipt `eth_call("latest")` visibility window (blocker #1081).
+///
+/// A short response is not a zero balance: it is an unreadable response. Keep
+/// retrying it as a possible transient visibility result, then fail loudly if
+/// the node never returns a complete ABI word.
+fn balance_of_with_retry<F>(method: &str, mut call: F) -> U256
+where
+    F: FnMut() -> Result<alloy_primitives::Bytes, rmpc_fork_e2e::HarnessError>,
+{
+    let mut last_error = String::new();
+    for attempt in 0..5u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        match call() {
+            Err(error) => {
+                last_error = format!("{method} attempt {attempt}: {error}");
+                eprintln!("[{method}] {last_error}");
+            }
+            Ok(raw) if raw.len() >= 32 => return U256::from_be_slice(&raw[..32]),
+            Ok(raw) => {
+                last_error = format!(
+                    "{method} attempt {attempt}: returned {} bytes, expected at least 32",
+                    raw.len()
+                );
+                eprintln!("[{method}] {last_error}");
+            }
+        }
     }
-    U256::from_be_slice(&raw[..32])
+
+    panic!("{method} unreadable after 5 attempts: {last_error}");
+}
+
+#[test]
+#[should_panic(expected = "unreadable after 5 attempts")]
+fn short_balance_of_response_is_not_coerced_to_zero() {
+    balance_of_with_retry("vault.balanceOf", || Ok(Bytes::new()));
 }
 
 /// Approve `spender` to pull `amount` vault shares from `account`.
