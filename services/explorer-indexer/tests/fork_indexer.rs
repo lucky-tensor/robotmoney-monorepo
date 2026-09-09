@@ -23,8 +23,12 @@ use explorer_indexer::{db::CountTable, indexer::run_once, indexer::IndexerConfig
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn populates_nine_tables_and_reindex_is_idempotent() {
-    let has_testnet = std::env::var("RMPC_TESTNET_RPC_URL").map(|v| !v.is_empty()).unwrap_or(false);
-    let has_fork = std::env::var("RMPC_FORK_RPC_URL").map(|v| !v.is_empty()).unwrap_or(false);
+    let has_testnet = std::env::var("RMPC_TESTNET_RPC_URL")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let has_fork = std::env::var("RMPC_FORK_RPC_URL")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
     if !has_testnet && !has_fork {
         panic!(
             "[explorer-indexer-tests] RPC endpoint REQUIRED here but unavailable. \
