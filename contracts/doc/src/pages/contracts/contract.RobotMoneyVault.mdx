@@ -5,7 +5,7 @@ description: "Multi-adapter ERC-4626 USDC vault on Base. Dynamic equal-weight ta
 
 # RobotMoneyVault
 
-[Git Source](https://github.com/robotmoney/robotmoney-core/blob/294ae939cc4db43ac7ec7bac05d27e475246f588/contracts/RobotMoneyVault.sol)
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/7ad48f9065de8dddbe6591f3819711a68aaed6b6/contracts/RobotMoneyVault.sol)
 
 **Inherits:** ERC4626, [AdminFloorAccessControlCounter](/contracts/lib/abstract.AdminFloorAccessControlCounter), ReentrancyGuard
 
@@ -1238,13 +1238,112 @@ function _requireAdapterCompatible(address adapter_) internal view;
 | ---- | ---- | ----------- |
 | adapter_ | `address` |  |
 
-<a id="_targetbpsfor"></a>
+<a id="_equalweightbps-uint256-uint256"></a>
 
-### _targetBpsFor
+### _equalWeightBps
+
+<i>
+
+Share of `MAX_BPS` owed to the `rank`-th (0-based, registry order) of
+`active` equally-weighted adapters.
+
+</i>
+
+`MAX_BPS / active` on its own FLOORS: with three active adapters it
+is 3333, so the per-adapter targets summed to 9999 bps and never to
+100 %. Pass 1 of `_routeDeposit` could therefore never place the last
+bps of NAV into a balanced, fully-deployed vault — `remaining` stayed
+positive and pass 2 ran on EVERY deposit, re-reading every adapter's
+`totalAssets()` (issue #1391). The `MAX_BPS % active` leftover bps are
+handed out one each to the lowest ranks, so the target set sums to
+exactly `MAX_BPS`.
+
+Callers still take `min(capBps, targetBps)`, so a distributed bps can
+never lift an adapter above its own cap.
 
 ```solidity
-function _targetBpsFor() internal view returns (uint256);
+function _equalWeightBps(uint256 rank, uint256 active) internal pure returns (uint256);
 ```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| rank | `uint256` |  |
+| active | `uint256` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint256` |  |
+
+<a id="_equalweightbalance-uint256-uint256-uint256"></a>
+
+### _equalWeightBalance
+
+<i>
+
+The `rank`-th active adapter's slice of `total` when `active`
+adapters split it equally — the balance `_equalWeightBps` denotes.
+
+</i>
+
+Computed as the DIFFERENCE OF TWO PREFIX SHARES rather than as
+`total * bps / MAX_BPS`, so the slices partition `total` exactly.
+Distributing the remainder bps is necessary but not sufficient:
+flooring each `total * bps / MAX_BPS` independently still loses up to
+`active - 1` wei, and on the real devnet composition that dust alone
+kept `remaining > 0` and dragged pass 2 — and its second round of
+`totalAssets()` reads — into every deposit (issue #1391).
+
+Because the slices sum to `total` while the adapters hold
+`total - idle`, pass 1's deficits always sum to at least the deposit,
+so pass 1 can place all of it whenever no `capBps` binds.
+
+```solidity
+function _equalWeightBalance(uint256 total, uint256 rank, uint256 active)
+        internal
+        pure
+        returns (uint256);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| total | `uint256` |  |
+| rank | `uint256` |  |
+| active | `uint256` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint256` |  |
+
+<a id="_targetbpsforindex-uint256"></a>
+
+### _targetBpsForIndex
+
+<i>
+
+Equal-weight target in bps for the adapter at registry `index`, or 0
+when it is inactive. The one definition every consumer shares — the
+allocator, `rebalance()` and the drift views — so the target set can
+never drift out of summing to `MAX_BPS` in one place but not another.
+
+</i>
+
+```solidity
+function _targetBpsForIndex(uint256 index) internal view returns (uint256);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| index | `uint256` |  |
 
 **Returns**
 
@@ -1428,6 +1527,17 @@ function activeAdapterCount() external view returns (uint256);
 ### currentTargetBps
 
 Equal-weight target allocation per active adapter in basis points.
+
+<i>
+
+The FLOORED base share, `MAX_BPS / activeAdapterCount()`. It is a
+single scalar and so cannot carry the `MAX_BPS % active` remainder
+bps the allocator distributes to the lowest-indexed active
+adapters (#1391) — for the exact per-adapter target read
+`getAdapterInfo(index)` or `getAdapterDrift()`, whose targets sum
+to the whole NAV.
+
+</i>
 
 ```solidity
 function currentTargetBps() external view returns (uint256);

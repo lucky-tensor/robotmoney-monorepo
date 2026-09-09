@@ -1,0 +1,253 @@
+---
+title: "ReadCountingAdapter"
+description: "`setProbe` exists so the slot is provably writable and the optimizer cannot fold the `SLOAD` away as a known zero."
+---
+
+# ReadCountingAdapter
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/bc45d15d9b60824c9fb575df196f7c638a354620/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
+
+**Inherits:** [IStrategyAdapter](/contracts/interfaces/interface.IStrategyAdapter)
+
+<i>
+
+A lossless no-yield adapter whose `totalAssets()` reads a dedicated
+storage slot NOTHING else in the contract touches. `totalAssets()` is
+`view`, so the vault reaches it through `STATICCALL` and it cannot
+increment a counter itself. Instead the test brackets the call under
+test with `vm.record()` / `vm.accesses()` and counts `SLOAD`s of
+`probe` (slot 0) — exactly one per `totalAssets()` call.
+
+</i>
+
+`setProbe` exists so the slot is provably writable and the optimizer
+cannot fold the `SLOAD` away as a known zero.
+
+## Constants
+
+### USDC
+
+```solidity
+IERC20 public immutable USDC;
+```
+
+### VAULT
+
+```solidity
+address public immutable VAULT;
+```
+
+## State Variables
+
+### probe
+
+<i>
+
+Slot 0 — read ONLY by `totalAssets()`. See `PROBE_SLOT` in the test.
+
+</i>
+
+```solidity
+uint256 private probe;
+```
+
+### underReport
+
+<i>
+
+Assets this adapter reports BELOW the USDC it actually holds, so a
+test can model a share-priced adapter whose `convertToAssets` rounds
+down (`MorphoAdapter`). `0` reports at par.
+
+</i>
+
+```solidity
+uint256 private underReport;
+```
+
+### readCostGas
+
+<i>
+
+Gas each `totalAssets()` call should burn, so a test can price the
+read at what a real protocol read costs (`MetaMorpho.totalAssets()`
+measures 201 145 gas). `0` keeps the adapter cheap.
+
+</i>
+
+```solidity
+uint256 private readCostGas;
+```
+
+## Functions
+
+<a id="onlyvault"></a>
+
+### onlyVault
+
+```solidity
+modifier onlyVault();
+```
+
+<a id="constructor-address-address"></a>
+
+### constructor
+
+```solidity
+constructor(address usdc_, address vault_);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| usdc_ | `address` |  |
+| vault_ | `address` |  |
+
+<a id="setprobe-uint256"></a>
+
+### setProbe
+
+```solidity
+function setProbe(uint256 probe_) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| probe_ | `uint256` |  |
+
+<a id="setreadcostgas-uint256"></a>
+
+### setReadCostGas
+
+```solidity
+function setReadCostGas(uint256 gas_) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| gas_ | `uint256` |  |
+
+<a id="setunderreport-uint256"></a>
+
+### setUnderReport
+
+```solidity
+function setUnderReport(uint256 dust) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| dust | `uint256` |  |
+
+<a id="deploy-uint256"></a>
+
+### deploy
+
+Receive `amount` USDC from the vault and deploy it into the underlying protocol.
+
+```solidity
+function deploy(uint256) external onlyVault;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| _ | `uint256` | Amount of USDC (6-decimal units) to deploy into the protocol. |
+
+<a id="withdraw-uint256"></a>
+
+### withdraw
+
+Withdraw `amount` USDC from the underlying protocol and return it to the vault.
+
+```solidity
+function withdraw(uint256 amount) external onlyVault returns (uint256 actual);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| amount | `uint256` | Amount of USDC to withdraw; pass `type(uint256).max` to withdraw all. |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| actual | `uint256` | The amount of USDC actually withdrawn (may be ≤ amount on shortfall). |
+
+<a id="totalassets"></a>
+
+### totalAssets
+
+Live USDC value held by this adapter (principal + accrued interest).
+
+```solidity
+function totalAssets() external view returns (uint256);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint256` |  |
+
+<a id="sweepforeigntoken-address"></a>
+
+### sweepForeignToken
+
+Permissionlessly sweep a NON-protected foreign token to the fixed
+quarantine address (custody invariants INV-1/INV-2). Anyone may
+call; the destination is a hardcoded constant, never caller-supplied.
+Reverts when `token` is USDC or the adapter's strategy/share token.
+
+```solidity
+function sweepForeignToken(address) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| _ | `address` | Address of the foreign ERC-20 to quarantine. |
+
+<a id="harvestrewards"></a>
+
+### harvestRewards
+
+Claim any underlying-protocol reward tokens and forward them as
+USDC to the owning vault (custody invariant INV-2 — no emissions
+stranded on the adapter or router). Permissionless: anyone may
+trigger the harvest; the destination is always the vault, never a
+caller-supplied address (INV-1).
+
+<i>
+
+Adapters that have no on-chain claimable rewards (e.g. Aave
+interest accrues automatically in the aToken balance) implement
+this as a no-op. Adapters with discrete reward tokens claim them
+here, swap to USDC, and credit the vault. This function MUST NOT
+revert when there are no rewards to claim.
+
+</i>
+
+```solidity
+function harvestRewards() external;
+```
+
+## Errors
+
+### OnlyVault
+
+```solidity
+error OnlyVault();
+```
+

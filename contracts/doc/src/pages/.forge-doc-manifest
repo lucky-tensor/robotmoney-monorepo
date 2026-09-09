@@ -220,13 +220,17 @@ contracts/test/contract.PortfolioRouterTest.mdx
 contracts/test/contract.PosConfAavePool.mdx
 contracts/test/contract.PosConfComet.mdx
 contracts/test/contract.PosConfMorphoVault.mdx
+contracts/test/contract.ReadCountingAdapter.mdx
 contracts/test/contract.RecordingSwapRouter.mdx
 contracts/test/contract.ReentrantVault.mdx
 contracts/test/contract.RevertingRetireVault.mdx
 contracts/test/contract.RobotMoneyGatewayTest.mdx
 contracts/test/contract.RobotMoneyVault4626Conformance.mdx
 contracts/test/contract.RobotMoneyVault4626ConformanceWithFee.mdx
+contracts/test/contract.RobotMoneyVaultRouteDepositTest.mdx
 contracts/test/contract.RobotMoneyVaultTest.mdx
+contracts/test/contract.RouteHarness.mdx
+contracts/test/contract.RouteUSDC.mdx
 contracts/test/contract.RouterGovernanceTest.mdx
 contracts/test/contract.RouterMockVault.mdx
 contracts/test/contract.RwaVaultTest.mdx

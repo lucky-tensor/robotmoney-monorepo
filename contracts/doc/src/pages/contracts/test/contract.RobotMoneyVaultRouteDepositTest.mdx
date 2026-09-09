@@ -1,0 +1,496 @@
+---
+title: "RobotMoneyVaultRouteDepositTest"
+---
+
+# RobotMoneyVaultRouteDepositTest
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/bc45d15d9b60824c9fb575df196f7c638a354620/contracts/test/RobotMoneyVaultRouteDeposit.t.sol)
+
+**Inherits:** Test
+
+## Constants
+
+### ONE_USDC
+
+```solidity
+uint256 internal constant ONE_USDC = 1e6;
+```
+
+### TVL_CAP
+
+```solidity
+uint256 internal constant TVL_CAP = 1_000_000_000 * ONE_USDC;
+```
+
+### PER_DEPOSIT_CAP
+
+```solidity
+uint256 internal constant PER_DEPOSIT_CAP = 100_000_000 * ONE_USDC;
+```
+
+### MAX_BPS
+
+```solidity
+uint256 internal constant MAX_BPS = 10_000;
+```
+
+### PROBE_SLOT
+
+<i>
+
+`ReadCountingAdapter.probe` — slot 0.
+
+</i>
+
+```solidity
+bytes32 internal constant PROBE_SLOT = bytes32(uint256(0));
+```
+
+### READS_PER_ADAPTER_ONE_ROUND
+
+<i>
+
+Reads per adapter that a CORRECT `_routeDeposit` makes: one for the
+`totalAssets()` NAV snapshot at the top of the function, one in
+pass 1. A third read means pass 2 ran and re-read the adapter.
+
+</i>
+
+```solidity
+uint256 internal constant READS_PER_ADAPTER_ONE_ROUND = 2;
+```
+
+### METAMORPHO_TOTAL_ASSETS_GAS
+
+<i>
+
+`MetaMorpho.totalAssets()` measured against the committed fork
+fixture (issue #1391 / PR #1394). Used to price the mock adapter's
+read at what the production read actually costs.
+
+</i>
+
+```solidity
+uint256 internal constant METAMORPHO_TOTAL_ASSETS_GAS = 201_145;
+```
+
+## State Variables
+
+### CAPS
+
+<i>
+
+The devnet / `Deploy.s.sol` cap set: 3334 / 3333 / 3333, summing to
+exactly `MAX_BPS`. Reproduced verbatim so the test models the real
+three-adapter vault the out-of-gas failure was observed on.
+
+</i>
+
+```solidity
+uint16[3] internal CAPS = [uint16(3334), uint16(3333), uint16(3333)];
+```
+
+### usdc
+
+```solidity
+RouteUSDC internal usdc;
+```
+
+### vault
+
+```solidity
+RouteHarness internal vault;
+```
+
+### adapters
+
+```solidity
+ReadCountingAdapter[3] internal adapters;
+```
+
+### admin
+
+```solidity
+address internal admin = makeAddr("admin");
+```
+
+### feeRecipient
+
+```solidity
+address internal feeRecipient = makeAddr("feeRecipient");
+```
+
+### alice
+
+```solidity
+address internal alice = makeAddr("alice");
+```
+
+## Functions
+
+<a id="setup"></a>
+
+### setUp
+
+```solidity
+function setUp() public;
+```
+
+<a id="_reads-address"></a>
+
+### _reads
+
+<i>
+
+Number of `totalAssets()` calls the recorded window made against
+`adapter_`, counted as `SLOAD`s of its dedicated probe slot.
+
+</i>
+
+```solidity
+function _reads(address adapter_) internal view returns (uint256 n);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| adapter_ | `address` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| n | `uint256` |  |
+
+<a id="_bootstrapbalancedvault-uint256"></a>
+
+### _bootstrapBalancedVault
+
+<i>
+
+Bring the vault to the steady state the failure was observed in: a
+balanced, fully-deployed three-adapter vault with no idle USDC.
+
+</i>
+
+```solidity
+function _bootstrapBalancedVault(uint256 seed) internal;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| seed | `uint256` |  |
+
+<a id="_routealone-uint256"></a>
+
+### _routeAlone
+
+<i>
+
+Fund the vault with `amount` idle USDC and run the allocator alone.
+
+</i>
+
+```solidity
+function _routeAlone(uint256 amount) internal;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| amount | `uint256` |  |
+
+<a id="_seeddevnetforkfixturecomposition"></a>
+
+### _seedDevnetForkFixtureComposition
+
+<i>
+
+Reproduce the committed devnet fork fixture exactly: NAV
+1 050 131 553 held as 350 098 606 / 350 033 503 / 349 999 444 with no
+idle USDC (PR #1394's measurements). Shares are minted by a token
+deposit first, then each adapter is topped up by direct transfer so
+the composition does not depend on how routing happens to split it.
+
+</i>
+
+```solidity
+function _seedDevnetForkFixtureComposition() internal;
+```
+
+<a id="_adapterbalances"></a>
+
+### _adapterBalances
+
+```solidity
+function _adapterBalances() internal view returns (uint256[3] memory bals);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| bals | `uint256[3]` |  |
+
+<a id="test_routedeposit_balancedvault_readseachadapteronce"></a>
+
+### test_routeDeposit_balancedVault_readsEachAdapterOnce
+
+`_routeDeposit` into a balanced, fully-deployed vault must make
+exactly ONE round of adapter reads in the allocator: pass 1
+places the whole deposit and pass 2 never runs.
+
+<i>
+
+RED before #1391: `_targetBpsFor()` returned `10000 / 3 == 3333`, so
+the three pass-1 targets summed to 9999 bps. Pass 1 could never place
+the last ~1 bps of TVL, `remaining` stayed positive, and pass 2
+walked all three adapters a second time — 3 reads each, not 2.
+
+</i>
+
+```solidity
+function test_routeDeposit_balancedVault_readsEachAdapterOnce() public;
+```
+
+<a id="test_routedeposit_balancedvault_passonecompletesthefill"></a>
+
+### test_routeDeposit_balancedVault_passOneCompletesTheFill
+
+Pass 1 alone absorbs the entire deposit into a balanced vault: no
+adapter is allocated to twice and nothing is left unrouted.
+
+<i>
+
+RED before #1391 — pass 2 allocated the 9999-vs-10000 shortfall,
+producing a second `Allocated` for the first adapter with headroom.
+
+</i>
+
+```solidity
+function test_routeDeposit_balancedVault_passOneCompletesTheFill() public;
+```
+
+<a id="test_routedeposit_dustdeposit_isplacedbypassone"></a>
+
+### test_routeDeposit_dustDeposit_isPlacedByPassOne
+
+A deposit smaller than 1 bps of TVL is the regime in which pass 1
+placed literally NOTHING before #1391: every adapter already held
+at least the floored 3333 bps target, so all three `continue`d and
+pass 2 did the entire job on a second round of reads.
+
+```solidity
+function test_routeDeposit_dustDeposit_isPlacedByPassOne() public;
+```
+
+<a id="test_routedeposit_devnetforkfixturecomposition_readsonce"></a>
+
+### test_routeDeposit_devnetForkFixtureComposition_readsOnce
+
+The exact devnet fork-fixture composition the out-of-gas failure
+was traced on (PR #1394): NAV 1 050 131 554 with the three
+adapters at 350 098 606 / 350 033 503 / 349 999 444 and the
+`Deploy.s.sol` cap set, taking the same 5 USDC deposit.
+
+<i>
+
+The trace's starving frame was the SECOND `totalAssets()` on the
+Morpho adapter (registry index 2), i.e. pass 2 walked all the way to
+the end of the registry. This pins that pass 2 no longer runs at all.
+
+</i>
+
+```solidity
+function test_routeDeposit_devnetForkFixtureComposition_readsOnce() public;
+```
+
+<a id="test_targetbalances_sumtototalassets"></a>
+
+### test_targetBalances_sumToTotalAssets
+
+The per-adapter equal-weight targets sum to the whole NAV. Before
+#1391 they summed to 9999 bps of it, leaving 1 bps permanently
+un-targetable.
+
+<i>
+
+Asserted through the public drift view so the claim is about
+observable contract state, not an internal helper.
+
+</i>
+
+```solidity
+function test_targetBalances_sumToTotalAssets() public;
+```
+
+<a id="test_routedeposit_neverexceedscapbps"></a>
+
+### test_routeDeposit_neverExceedsCapBps
+
+No adapter may ever be pushed above its `capBps` share of NAV —
+distributing the rounding remainder must go through
+`min(capBps, targetBps)`, never around it.
+
+```solidity
+function test_routeDeposit_neverExceedsCapBps() public;
+```
+
+<a id="testfuzz_routedeposit_neverexceedscapbps-uint256-uint256"></a>
+
+### testFuzz_routeDeposit_neverExceedsCapBps
+
+Fuzzed: routing any deposit into any starting composition must
+never push an adapter above its `capBps` share of NAV.
+
+```solidity
+function testFuzz_routeDeposit_neverExceedsCapBps(uint256 seed, uint256 amount) public;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| seed | `uint256` |  |
+| amount | `uint256` |  |
+
+<a id="test_routedeposit_tightcapbindsandleftovergoeselsewhere"></a>
+
+### test_routeDeposit_tightCapBindsAndLeftoverGoesElsewhere
+
+A tight cap still binds: when one adapter's `capBps` is below its
+equal-weight share, pass 1 stops at the cap and pass 2 places the
+leftover in an adapter that still has absolute headroom.
+
+```solidity
+function test_routeDeposit_tightCapBindsAndLeftoverGoesElsewhere() public;
+```
+
+<a id="test_routedeposit_passtworeusespassonereadswhenpassoneplacesnothing"></a>
+
+### test_routeDeposit_passTwoReusesPassOneReadsWhenPassOnePlacesNothing
+
+When pass 1 allocates NOTHING and pass 2 still has to run, pass 2
+reuses pass 1's reads instead of paying for a second round: only
+staticcalls happened in between, so the cached values are exact
+(#1391 caching remedy).
+
+<i>
+
+The rounding fix alone does not reach this state — it needs adapters
+sitting ABOVE their effective target, which is what accrued interest
+against a binding `capBps` produces. Modelled here by tight caps plus
+a direct transfer into the adapters (the protocol-donation path).
+
+</i>
+
+```solidity
+function test_routeDeposit_passTwoReusesPassOneReadsWhenPassOnePlacesNothing() public;
+```
+
+<a id="test_routedeposit_passtworereadsafterpassoneallocated"></a>
+
+### test_routeDeposit_passTwoRereadsAfterPassOneAllocated
+
+The cache is NOT used once pass 1 has allocated: a cached balance
+would then be a modelled value, and pass 2's `capBps` headroom
+check must only ever be computed from a real read.
+
+```solidity
+function test_routeDeposit_passTwoRereadsAfterPassOneAllocated() public;
+```
+
+<a id="test_routedeposit_shareroundingduststaysidleratherthancostingasecondround"></a>
+
+### test_routeDeposit_shareRoundingDustStaysIdleRatherThanCostingASecondRound
+
+A share-priced adapter reports back slightly less than was
+deployed into it, so pass 1's cap-headroom score under-states the
+real headroom by that dust and pass 2 is skipped. The dust stays
+idle rather than costing a second full round of adapter reads.
+
+<i>
+
+This is the unit-test twin of
+`VaultForkRegressions.test_fork_unroutedDeposit_emitsEventAndStaysIdle`,
+where pass 2's entire contribution to a cap-bound deposit was ONE wei.
+Pinned here so the trade does not depend on fork CI to stay honest.
+
+</i>
+
+```solidity
+function test_routeDeposit_shareRoundingDustStaysIdleRatherThanCostingASecondRound() public;
+```
+
+<a id="test_gas_balancedvaultdeposit"></a>
+
+### test_gas_balancedVaultDeposit
+
+Not an assertion — records the headline number for #1391: gas for
+one ordinary deposit into a balanced, fully-deployed three-adapter
+vault, plus the adapter `totalAssets()` reads it pays for.
+
+```solidity
+function test_gas_balancedVaultDeposit() public;
+```
+
+<a id="test_gas_balancedvaultdeposit_realisticadapterreadcost"></a>
+
+### test_gas_balancedVaultDeposit_realisticAdapterReadCost
+
+Not an assertion — the same ordinary balanced-vault deposit with
+each adapter's `totalAssets()` priced at the 201 145 gas
+`MetaMorpho.totalAssets()` measures on the committed fork fixture,
+so the recorded number reflects the production deposit path rather
+than a free mock read.
+
+```solidity
+function test_gas_balancedVaultDeposit_realisticAdapterReadCost() public;
+```
+
+<a id="test_gas_devnetforkfixturedeposit_realisticadapterreadcost"></a>
+
+### test_gas_devnetForkFixtureDeposit_realisticAdapterReadCost
+
+Not an assertion — the headline number for #1391: the 5 USDC
+deposit into the EXACT devnet fork-fixture composition, with each
+adapter read priced at the 201 145 gas `MetaMorpho.totalAssets()`
+measures. This is the composition whose pass-2 Morpho read starved
+under EIP-150 and produced the dapp-e2e out-of-gas.
+
+```solidity
+function test_gas_devnetForkFixtureDeposit_realisticAdapterReadCost() public;
+```
+
+## Events
+
+### Allocated
+
+```solidity
+event Allocated(uint256 indexed index, address indexed adapter, uint256 amount);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| index | `uint256` |  |
+| adapter | `address` |  |
+| amount | `uint256` |  |
+
+### UnroutedDeposit
+
+```solidity
+event UnroutedDeposit(uint256 amount);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| amount | `uint256` |  |
+

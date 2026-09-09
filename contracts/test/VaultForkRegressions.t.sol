@@ -396,8 +396,21 @@ contract VaultForkRegressions is Test {
         usdc.approve(address(vault_), type(uint256).max);
 
         uint256 depositAmt = 100_000 * ONE_USDC;
-        // Morpho's share conversion routes one wei over the nominal half-cap.
-        uint256 expectedIdle = depositAmt / 2 - 1;
+        // Half the deposit exceeds the 5000 bps cap and stays idle.
+        //
+        // This was `depositAmt / 2 - 1` before #1391: pass 1 filled the adapter to
+        // exactly its cap balance, Morpho's share conversion then reported one wei
+        // LESS than was deployed, and pass 2 spent a whole second round of
+        // `MorphoAdapter.totalAssets()` (201,145 gas on the fork fixture) to place
+        // that single wei. #1391 gates pass 2 on the cap headroom pass 1 observed,
+        // scoring an allocated adapter at the amount deployed — an upper bound on
+        // what a share-priced adapter reports back, so headroom is under-stated by
+        // exactly that rounding dust and pass 2 is skipped.
+        //
+        // The wei is not lost: it stays idle, `totalAssets` still counts it, and
+        // the next deposit or `rebalance` routes it. The cap is unaffected — the
+        // adapter is at its cap either way.
+        uint256 expectedIdle = depositAmt / 2;
 
         // The UnroutedDeposit event must be emitted with the correct amount.
         vm.expectEmit(false, false, false, true, address(vault_));
