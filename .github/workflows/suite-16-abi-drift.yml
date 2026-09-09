@@ -147,8 +147,9 @@ jobs:
       # each defect shape (an un-gated entry with no tracking issue, a binding
       # in neither block, a listed file that does not exist, a gated file
       # nothing diffs, a gated file that only appears in the paths: trigger, a
-      # file claimed as both) and asserts the guard fires on each. A guard only
-      # ever observed passing is a guard nobody has checked.
+      # gated file the generator never writes, a file claimed as both) and
+      # asserts the guard fires on each. A guard only ever observed passing is a
+      # guard nobody has checked.
       - name: Self-test the ABI binding inventory guard
         run: python3 .github/scripts/check_abi_binding_inventory.py --self-test
 
