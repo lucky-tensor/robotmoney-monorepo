@@ -39,6 +39,10 @@ ACCEPTED_ADVISORIES=(
   # origin left at its wildcard default while sending credentials; the dApp never
   # runs hono itself — hono is only reachable through the pinned porto wallet SDK.
   "GHSA-88fw-hqm2-52qc" # hono: CORS middleware reflects any Origin with credentials on wildcard default. expires: 2026-12-01
+  # js-yaml (build-time / dev-dependency only, transitive via eslint > @eslint/eslintrc).
+  # The CPU exhaustion vulnerability in merge keys affects only YAML parsing during
+  # linting of developer-controlled config files; it does not affect the production runtime bundle.
+  "GHSA-2883-xcg3-v3hh" # js-yaml: maxTotalMergeKeys does not limit CPU use for empty merge sources. expires: 2026-12-01
 )
 
 ignore_args=()
