@@ -33,6 +33,7 @@ use crate::fees::compute_fees;
 use crate::gateway::RouterGovernance;
 use crate::network_env::NetworkEnv;
 use crate::nonce::AgentLock;
+use crate::output::emit;
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
 use crate::signer::{require_production_grade_for_write, AgentSigner, SignerBackendKind};
 use crate::tx::{
@@ -391,22 +392,12 @@ pub fn run(args: Args) -> i32 {
             block_number,
         },
     };
-    emit_output(&out, args.pretty);
+    emit(&out, args.pretty);
     EXIT_OK
 }
 
-fn emit_output<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("propose output serialises");
-    println!("{json}");
-}
-
 fn emit_failure(out: &ProposeFailure, pretty: bool) {
-    emit_output(out, pretty);
+    emit(out, pretty);
 }
 
 #[cfg(test)]

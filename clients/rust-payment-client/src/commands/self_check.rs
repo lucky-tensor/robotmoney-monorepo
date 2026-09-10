@@ -422,12 +422,7 @@ pub fn run(config_path: &Path, pretty: bool) -> i32 {
                     checks.gateway_code_hash_match = true;
                 }
             }
-            (
-                false,
-                checks,
-                cfg.chain_id,
-                Some(err.name().to_string()),
-            )
+            (false, checks, cfg.chain_id, Some(err.name().to_string()))
         }
     };
 

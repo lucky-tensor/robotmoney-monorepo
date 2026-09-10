@@ -27,6 +27,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::gateway::RouterGovernance;
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{DecimalU256, Envelope, PartialBuilder};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 
@@ -328,16 +329,6 @@ async fn call_active_proposal(
         executed: r.executed,
         cancelled: r.cancelled,
     })
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-governance output serialises");
-    println!("{json}");
 }
 
 #[cfg(test)]

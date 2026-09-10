@@ -41,6 +41,7 @@ use crate::gateway::RobotMoneyGateway;
 use crate::logging::{record_audit, AuditDecision, AuditRecordBuilder};
 use crate::network_env::NetworkEnv;
 use crate::nonce::AgentLock;
+use crate::output::emit;
 use crate::policy::{Preflight, PreflightInputs};
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
 use crate::signer::{require_production_grade_for_write, AgentSigner, SignerBackendKind};
@@ -459,9 +460,7 @@ pub fn run(args: Args) -> i32 {
         ) {
             Ok(b) => b,
             Err(e) => {
-                record_audit(
-                    &audit.build(AuditDecision::Refused, Some(e.name().to_string())),
-                );
+                record_audit(&audit.build(AuditDecision::Refused, Some(e.name().to_string())));
                 emit_refusal(
                     &DepositFailure {
                         status: "refused",
@@ -572,10 +571,7 @@ pub fn run(args: Args) -> i32 {
             // Treat broadcast failure as a refusal — operator-visible
             // failure with a stable name. Most likely cause is a contract
             // revert simulated by the node ahead of inclusion.
-            record_audit(&audit.build(
-                AuditDecision::BroadcastFailed,
-                Some(e.name().to_string()),
-            ));
+            record_audit(&audit.build(AuditDecision::BroadcastFailed, Some(e.name().to_string())));
             emit_refusal(
                 &DepositFailure {
                     status: "refused",
@@ -738,16 +734,6 @@ pub fn run(args: Args) -> i32 {
     };
     emit(&out, args.pretty);
     EXIT_OK
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("deposit output serialises");
-    println!("{json}");
 }
 
 fn emit_refusal(out: &DepositFailure, pretty: bool) {

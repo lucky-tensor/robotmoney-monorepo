@@ -21,6 +21,8 @@ pub mod gateway;
 pub mod logging;
 pub mod network_env;
 pub mod nonce;
+/// One owner for serialising a command's output document to stdout (issue #1285).
+pub mod output;
 pub mod policy;
 pub mod read_output;
 pub mod replay_cache;

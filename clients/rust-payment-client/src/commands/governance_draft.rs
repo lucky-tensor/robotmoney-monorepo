@@ -61,6 +61,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::consensus_receipt::{BucketWeight, ConsensusReceipt, CANONICAL_BUCKET_ORDER};
 use crate::gateway::{ConsensusRecommendationReceipt, PortfolioRouter, RouterGovernance};
+use crate::output::emit;
 use crate::rpc::{CallRequest, FailoverRpcClient, RawLog};
 
 const EXIT_OK: i32 = 0;
@@ -401,7 +402,7 @@ pub fn run(args: Args) -> i32 {
         }
     }
 
-    emit_output(&DraftOutput { ok: true, drafts }, args.pretty);
+    emit(&DraftOutput { ok: true, drafts }, args.pretty);
     EXIT_OK
 }
 
@@ -789,18 +790,8 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     Ok(body.to_vec())
 }
 
-fn emit_output<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("governance draft-proposal output serialises");
-    println!("{json}");
-}
-
 fn emit_failure(out: &DraftFailure, pretty: bool) {
-    emit_output(out, pretty);
+    emit(out, pretty);
 }
 
 #[cfg(test)]

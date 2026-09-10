@@ -29,6 +29,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::gateway::TimelockController;
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{Envelope, PartialBuilder};
 use crate::rpc::{CallRequest, FailoverRpcClient, RawLog};
 
@@ -464,16 +465,6 @@ async fn call_get_timestamp(
         crate::errors::RmpcError::ErrRpcDecode(format!("getTimestamp abi decode: {e}"))
     })?;
     Ok(r._0.saturating_to::<u64>())
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-timelock output serialises");
-    println!("{json}");
 }
 
 #[cfg(test)]

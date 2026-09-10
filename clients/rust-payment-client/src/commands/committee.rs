@@ -33,6 +33,7 @@ use crate::fees::{compute_fees, FeeBid};
 use crate::gateway::InvestmentCommitteePolicy;
 use crate::network_env::NetworkEnv;
 use crate::nonce::AgentLock;
+use crate::output::emit;
 use crate::rpc::FailoverRpcClient;
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
 use crate::signer::{require_production_grade_for_write, AgentSigner, SignerBackendKind};
@@ -671,17 +672,9 @@ fn fetch_fees(
 }
 
 fn emit_output(out: &CommitteeOutput, pretty: bool) {
-    if pretty {
-        println!("{}", serde_json::to_string_pretty(out).unwrap_or_default());
-    } else {
-        println!("{}", serde_json::to_string(out).unwrap_or_default());
-    }
+    emit(out, pretty);
 }
 
 fn emit_failure(out: &CommitteeFailure, pretty: bool) {
-    if pretty {
-        println!("{}", serde_json::to_string_pretty(out).unwrap_or_default());
-    } else {
-        println!("{}", serde_json::to_string(out).unwrap_or_default());
-    }
+    emit(out, pretty);
 }

@@ -35,6 +35,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::gateway::RobotMoneyGateway;
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{DecimalU256, Envelope, PartialBuilder};
 use crate::rpc::RawLog;
 
@@ -178,16 +179,6 @@ pub fn run(config_path: &Path, deposit_id_hex: &str, pretty: bool) -> i32 {
             EXIT_STARTUP_FAIL
         }
     }
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-deposit output serialises");
-    println!("{json}");
 }
 
 /// Map a deposit lookup outcome to its process exit code.

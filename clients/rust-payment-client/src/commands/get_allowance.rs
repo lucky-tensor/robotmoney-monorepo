@@ -22,6 +22,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::gateway::Erc20;
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{DecimalU256, Envelope, PartialBuilder};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 
@@ -162,16 +163,6 @@ async fn call_allowance(
     let decoded = Erc20::allowanceCall::abi_decode_returns(&out, true)
         .map_err(|e| crate::errors::RmpcError::ErrRpcDecode(format!("allowance decode: {e}")))?;
     Ok(decoded._0)
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-allowance output serialises");
-    println!("{json}");
 }
 
 #[cfg(test)]

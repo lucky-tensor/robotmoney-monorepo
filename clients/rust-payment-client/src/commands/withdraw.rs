@@ -46,6 +46,7 @@ use crate::gateway::{Erc20, MockVault, RobotMoneyGateway};
 use crate::logging::{record_audit, AuditDecision, AuditRecordBuilder};
 use crate::network_env::NetworkEnv;
 use crate::nonce::AgentLock;
+use crate::output::emit;
 use crate::policy::{Preflight, PreflightInputs};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
@@ -451,9 +452,7 @@ pub fn run(args: Args) -> i32 {
         ) {
             Ok(b) => b,
             Err(e) => {
-                record_audit(
-                    &audit.build(AuditDecision::Refused, Some(e.name().to_string())),
-                );
+                record_audit(&audit.build(AuditDecision::Refused, Some(e.name().to_string())));
                 emit_refusal(
                     &WithdrawFailure {
                         status: "refused",
@@ -524,10 +523,7 @@ pub fn run(args: Args) -> i32 {
         Ok(h) => h,
         Err(e) => {
             log::error!("rmpc withdraw: eth_sendRawTransaction failed: {e}");
-            record_audit(&audit.build(
-                AuditDecision::BroadcastFailed,
-                Some(e.name().to_string()),
-            ));
+            record_audit(&audit.build(AuditDecision::BroadcastFailed, Some(e.name().to_string())));
             emit_refusal(
                 &WithdrawFailure {
                     status: "refused",
@@ -807,16 +803,6 @@ async fn call_erc20_balance_of(
     let decoded = Erc20::balanceOfCall::abi_decode_returns(&out, true)
         .map_err(|e| RmpcError::ErrRpcDecode(format!("balanceOf decode: {e}")))?;
     Ok(decoded._0)
-}
-
-fn emit<T: serde::Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("withdraw output serialises");
-    println!("{json}");
 }
 
 fn emit_refusal(out: &WithdrawFailure, pretty: bool) {
