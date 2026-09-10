@@ -61,7 +61,11 @@ jobs:
     # 25 (was 20): the logging-facade guard added by issue #1282 is the first
     # `cargo test` in this job, so on a cold cache it codegens rmpc-logging and
     # its (small) dependency tree that clippy had only ever type-checked.
-    timeout-minutes: 25
+    # 35 (was 25): the embedded-migration parity guard added by issue #1416 is
+    # an explorer-indexer test target, so on a cold cache it additionally
+    # codegens that package's dev-dependency graph (testcontainers, bollard,
+    # rmpc-fork-e2e) which clippy had only type-checked.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,6 +100,36 @@ jobs:
           bash .github/scripts/cargo_test_require_executed.sh \
             -p rmpc-logging \
             --test workspace_uses_shared_facade -- --nocapture
+
+      # EMBEDDED-MIGRATION PARITY GUARD (issue #1416)
+      # services/explorer-indexer/src/db.rs embeds the migration set at COMPILE
+      # time with `sqlx::migrate!("./migrations")`. On stable Rust that macro
+      # registers no `rerun-if-changed` for the directory it read (sqlx calls
+      # `proc_macro::tracked_path::path()` only under `sqlx_macros_unstable`),
+      # so before #1416 a `.sql`-only change did not make cargo rebuild the
+      # crate. Because Swatinem/rust-cache restores `target/` across runs, a PR
+      # that only added a migration could go GREEN with that migration never
+      # compiled in, and `indexer --migrate-only` built from that cache would
+      # not apply it. `services/explorer-indexer/build.rs` now supplies the
+      # missing dependency.
+      #
+      # migration_set_parity.rs is the guard on that mechanism: it compares the
+      # compile-time embedded set against the run-time contents of
+      # `migrations/`, so deleting or breaking build.rs turns this RED.
+      #
+      # It belongs in this LIGHT suite rather than suite 8
+      # (explorer-indexer-fast) for two reasons: it needs no Postgres, no Docker
+      # and no network — it is a filesystem walk plus an iteration over an
+      # embedded static — and its subject is the BUILD, so it must run on every
+      # Rust change including drafts. Suite 8 is `system-correctness` and skips
+      # draft PRs entirely, which is exactly when a stale `target/` bites.
+      # Wrapped in the executed-count guard so a zero-tests-collected run fails
+      # RED, never silent-green.
+      - name: Indexer embedded-migration parity guard
+        run: |
+          bash .github/scripts/cargo_test_require_executed.sh \
+            -p explorer-indexer \
+            --test migration_set_parity -- --nocapture
 
   audit:
     name: rust-audit

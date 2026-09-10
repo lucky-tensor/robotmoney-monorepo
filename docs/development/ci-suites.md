@@ -150,7 +150,7 @@ compare (it names the mismatch rather than reporting stale docs).
 **Trigger paths:** `clients/rust-payment-client/**`, `testing/ethereum-testnet/e2e-rust/**`, `services/explorer-indexer/**`
 
 **Jobs:**
-- `lint` — fmt and clippy across all crates, plus the workspace logging-facade guard; runs immediately
+- `lint` — fmt and clippy across all crates, plus the workspace logging-facade guard and the indexer embedded-migration parity guard; runs immediately
 - `audit` — dependency vulnerability scan; runs in parallel with `lint` (independent of build cache)
 - `doc-coverage` — build and rustdoc threshold check; **needs `lint`** (avoids running a full build on code that fails style checks)
 - `test-target-coverage` — every cargo integration-test target is executed by a workflow or allowlisted with a reason (issue #1282); pure Python, no toolchain, so it answers even when the Rust build is broken. See [Integration-test target coverage](#integration-test-target-coverage).
@@ -162,6 +162,7 @@ compare (it names the mismatch rather than reporting stale docs).
 4. `cargo fmt --check` — formatting across all crates
 5. `cargo clippy --all-targets --all-features -- -D warnings` — zero warnings enforced. `--all-targets` is what type-checks every crate's `tests/` integration binaries; the root manifest is a virtual manifest with no `default-members`, so this one command covers every workspace member. **Do not drop `--all-targets`** — see [Rust `tests/` compile coverage](#rust-tests-compile-coverage) (issue #1295), which fails red if it is removed.
 6. `cargo_test_require_executed.sh -p rmpc-logging --test workspace_uses_shared_facade` — every binary and service entrypoint initialises logging through `rmpc_logging::init_service` and not `tracing_subscriber::fmt()` (issue #247). Source-text walk, no chain, no Docker. It was executed by no workflow until issue #1282, so the regression it exists to make load-bearing was not.
+7. `cargo_test_require_executed.sh -p explorer-indexer --test migration_set_parity` — the compile-time embedded migration set (`explorer_indexer::db::MIGRATOR`, produced by `sqlx::migrate!("./migrations")`) matches the on-disk `services/explorer-indexer/migrations/` directory (issue #1416). On stable Rust that macro registers no `rerun-if-changed` for the directory it read — sqlx calls `proc_macro::tracked_path::path()` only under `sqlx_macros_unstable` — so before #1416 a `.sql`-only change did not force a rebuild, and with `Swatinem/rust-cache` restoring `target/` a PR that only added a migration could go green with that migration never compiled in. `services/explorer-indexer/build.rs` supplies the missing dependency and this target is the guard on it: filesystem walk plus an iteration over an embedded static, no Postgres, no Docker, no network. It lives in this LIGHT suite rather than [suite 8](#8-explorer-indexer-tests) precisely because suite 8 is `system-correctness` and skips draft PRs — a stale `target/` bites hardest during draft iteration.
 
 **Steps — `test-target-coverage` job:**
 1. Checkout repository
