@@ -315,13 +315,15 @@ jobs:
       # RED rather than passing as a silent skip. The permanent guard against
       # this whole class -- a tests/*.rs file no workflow names -- is
       # .github/scripts/check_cargo_test_target_coverage.py, run in suite 4.
-      - name: rmpc CLI surface (deposit, router, status, self-check, get-*)
+      - name: rmpc CLI surface (deposit, withdraw, router, status, self-check, get-*)
         run: |
           bash .github/scripts/cargo_test_require_executed.sh \
             --release \
             --manifest-path clients/rust-payment-client/Cargo.toml \
             --test cli \
             --test cli_deposit \
+            --test cli_withdraw \
+            --test cli_withdraw_router \
             --test cli_status \
             --test cli_self_check \
             --test deposit_router \

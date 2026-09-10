@@ -34,6 +34,7 @@ use crate::fees::compute_fees;
 use crate::gateway::RouterGovernance;
 use crate::network_env::NetworkEnv;
 use crate::nonce::AgentLock;
+use crate::output::emit;
 use crate::rpc::{CallRequest, FailoverRpcClient};
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
 use crate::signer::{require_production_grade_for_write, AgentSigner, SignerBackendKind};
@@ -166,7 +167,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &VoteFailure {
                     ok: false,
-                    error: error_name(&err).to_string(),
+                    error: err.name().to_string(),
                     message: Some(format!("{err}")),
                 },
                 args.pretty,
@@ -299,7 +300,7 @@ pub fn run(args: Args) -> i32 {
                     "rmpc vote: already voted FOR proposal_id={}; returning no-op",
                     args.proposal_id
                 );
-                emit_output(
+                emit(
                     &VoteOutput {
                         ok: true,
                         status: "noop".to_string(),
@@ -334,7 +335,7 @@ pub fn run(args: Args) -> i32 {
                 args.choice.as_str(),
                 args.proposal_id
             );
-            emit_output(
+            emit(
                 &VoteOutput {
                     ok: true,
                     status: "noop".to_string(),
@@ -360,7 +361,7 @@ pub fn run(args: Args) -> i32 {
                 emit_failure(
                     &VoteFailure {
                         ok: false,
-                        error: error_name(&e).to_string(),
+                        error: e.name().to_string(),
                         message: Some(format!("{e}")),
                     },
                     args.pretty,
@@ -417,7 +418,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &VoteFailure {
                     ok: false,
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                 },
                 args.pretty,
@@ -435,7 +436,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &VoteFailure {
                     ok: false,
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                 },
                 args.pretty,
@@ -459,7 +460,7 @@ pub fn run(args: Args) -> i32 {
     }
 
     let block_number = receipt.block_number.unwrap_or(0);
-    emit_output(
+    emit(
         &VoteOutput {
             ok: true,
             status: "cast".to_string(),
@@ -524,36 +525,8 @@ fn parse_proposal_id(raw: &str) -> crate::errors::Result<U256> {
     }
 }
 
-fn emit_output<T: serde::Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("vote output serialises");
-    println!("{json}");
-}
-
 fn emit_failure(out: &VoteFailure, pretty: bool) {
-    emit_output(out, pretty);
-}
-
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-        _ => "ErrUnknown",
-    }
+    emit(out, pretty);
 }
 
 #[cfg(test)]

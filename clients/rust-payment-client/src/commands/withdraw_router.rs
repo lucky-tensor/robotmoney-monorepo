@@ -3,27 +3,20 @@
 //! `rmpc withdraw-router` — sign and broadcast a gateway multi-vault proportional
 //! redemption through the Portfolio Router (agent-initiated).
 //!
-//! Mirrors the structure of `rmpc withdraw` with router-specific preflight:
+//! The cross-cutting sequence — signer policy, keystore, single-flight
+//! lock, replay cache, runtime, RPC, fees, nonce, sign, broadcast,
+//! receipt — belongs to [`crate::write_path`] (issue #1285). What is
+//! router-specific and lives here:
 //!
-//! 1. Load config + signer.
-//! 2. Acquire the per-agent file lock (single-flight CLI).
-//! 3. Run gateway preflight via [`Preflight::run_withdraw_gateway`]:
-//!    a. chain id
-//!    b. code hash pin
-//!    c. gateway paused
-//!    d. agent policy active + not expired
-//!    e. maxWithdrawPerPayment >= sum(sharesPerLeg)
-//!    f. effectiveWithdrawWindowGross + totalShares <= maxWithdrawPerWindow
-//! 4. Preview: read router effective weights and display per-leg shares out.
-//! 5. Require explicit `--confirm` flag before signing.
-//! 6. Compute fees from `eth_feeHistory`.
-//! 7. Build the EIP-1559 envelope for
-//!    `gateway.withdrawFromRouter(orderId, vaults, sharesPerLeg, deadline,
-//!    idempotencyKey)`. The redeem legs are driven by the caller-supplied
-//!    `vaults[]`: `vaults[i]` is identity-bound to `sharesPerLeg[i]`
-//!    (issue #967), not the router's live weight vector.
-//! 8. Sign, broadcast, wait for receipt.
-//! 9. Decode `AgentWithdrawalRouted` event log → emit stable JSON on stdout.
+//! 1. Argument parsing: `vaults[i]` is identity-bound to
+//!    `sharesPerLeg[i]` (issue #967), and `minAssetsPerLeg` is the
+//!    per-leg slippage floor (GW-5 / F-11).
+//! 2. [`Preflight::run_withdraw_gateway`] against the summed shares, then
+//!    [`Preflight::run_withdraw_vault`] per identity-bound leg (RPC-7).
+//! 3. The explicit `--confirm` gate: without it the command prints a
+//!    preview refusal and exits 2 without signing.
+//! 4. `gateway.withdrawFromRouter(...)` calldata.
+//! 5. Decoding the `AgentWithdrawalRouted` event log → stable JSON.
 //!
 //! Exit codes mirror `rmpc withdraw`:
 //! - 0 — success.
@@ -32,32 +25,22 @@
 
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy_primitives::{Address, Bytes, LogData, B256, U256};
+use alloy_primitives::{Address, LogData, B256, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use serde::Serialize;
 
-use crate::commands::deposit::MAX_DEADLINE_SKEW_SECS;
-use crate::commands::self_check::ChecksOutput;
-use crate::commands::withdraw::withdraw_vault_preflight;
 use crate::config::Config;
-use crate::errors::RmpcError;
-use crate::fees::compute_fees;
 use crate::gateway::RobotMoneyGateway;
-use crate::logging::{record_audit, AuditDecision, AuditRecordBuilder};
-use crate::network_env::NetworkEnv;
-use crate::nonce::AgentLock;
-use crate::policy::{Preflight, PreflightInputs};
-use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
-use crate::signer::{require_production_grade_for_write, AgentSigner, SignerBackendKind};
-use crate::tx::{
-    broadcast, build_eip1559, encode_signed, signing_hash, wait_for_receipt_with, Eip1559Inputs,
+use crate::logging::AuditDecision;
+use crate::output::emit;
+use crate::policy::{ChecksOutput, Preflight, PreflightInputs};
+use crate::replay_cache::OP_WITHDRAW;
+use crate::write_path::{
+    open_session, Submission, WriteRequest, EXIT_OK, EXIT_REFUSAL, EXIT_STARTUP_FAIL,
+    MAX_DEADLINE_SKEW_SECS,
 };
-
-const EXIT_OK: i32 = 0;
-const EXIT_REFUSAL: i32 = 2;
-const EXIT_STARTUP_FAIL: i32 = 3;
 
 /// Inputs collected by `main.rs` from the CLI parser.
 #[derive(Debug, Clone)]
@@ -107,23 +90,6 @@ pub struct WithdrawRouterOutput {
     pub tx_hash: String,
     pub gas_used: String,
     pub effective_gas_price: String,
-}
-
-/// Stable JSON shape emitted on a refusal.
-#[derive(Debug, Serialize)]
-pub struct WithdrawRouterFailure {
-    pub status: &'static str,
-    pub error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tx_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checks: Option<ChecksOutput>,
 }
 
 /// Entry point invoked from `main.rs`. Returns the desired process exit code.
@@ -253,234 +219,47 @@ pub fn run(args: Args) -> i32 {
         .unwrap_or(0);
     let deadline = now.saturating_add(deadline_secs);
 
-    if let Err(err) = require_production_grade_for_write(cfg.chain_id, SignerBackendKind::Software)
-    {
-        log::error!("rmpc withdraw-router: {err}");
-        emit_refusal(
-            &WithdrawRouterFailure {
-                status: "refused",
-                error: error_name(&err).to_string(),
-                message: Some(format!("{err}")),
-                agent: None,
-                order_id: Some(format!("{order_id:#x}")),
-                tx_hash: None,
-                checks: None,
-            },
-            args.pretty,
-        );
-        return EXIT_REFUSAL;
-    }
-
-    // Decrypt keystore.
-    let passphrase = match std::env::var(PASSPHRASE_ENV_VAR) {
-        Ok(s) => s,
-        Err(_) => {
-            log::error!(
-                "rmpc withdraw-router: ${PASSPHRASE_ENV_VAR} is unset; refusing to prompt on stdin"
-            );
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-    let signer = match SoftwareSigner::load_with_passphrase(
-        &cfg.signer.keystore_path,
-        passphrase.as_bytes(),
-        cfg.signer.allow_software_fallback,
+    // -- Shared write-path prologue ---------------------------------------
+    // total_shares is the replay-cache amount field, and OP_WITHDRAW keeps
+    // router-withdraw entries disjoint from deposit entries (PAYMENTID-001).
+    let mut session = match open_session(
+        &cfg,
+        WriteRequest {
+            command: "withdraw-router",
+            gateway: gateway_addr,
+            order_id,
+            idempotency_key,
+            amount: total_shares,
+            deadline,
+            replay_op: Some(OP_WITHDRAW),
+        },
     ) {
         Ok(s) => s,
-        Err(crate::signer::SignerError::ErrSoftwareSignerDisallowed) => {
-            log::error!(
-                "rmpc withdraw-router: ErrSoftwareSignerDisallowed: [signer].allow_software_fallback must be true"
-            );
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: "ErrSoftwareSignerDisallowed".to_string(),
-                    message: Some(
-                        "[signer].allow_software_fallback must be true to use the software keystore"
-                            .to_string(),
-                    ),
-                    agent: None,
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: None,
-                    checks: None,
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
-        }
-        Err(e) => {
-            log::error!("rmpc withdraw-router: signer load failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
+        Err(abort) => return abort.exit(args.pretty),
     };
-    let agent_address = signer.public_address();
-    let backend_label = match signer.backend_kind() {
-        crate::signer::SignerBackendKind::Software => "software",
-        crate::signer::SignerBackendKind::Hsm => "hsm",
-        crate::signer::SignerBackendKind::Kms => "kms",
-    };
-
-    let mut audit = AuditRecordBuilder {
-        agent: format!("{agent_address:#x}"),
-        backend: backend_label.to_string(),
-        request_type: "withdraw-router".to_string(),
-        order_id: format!("{order_id:#x}"),
-        idempotency_key: format!("{idempotency_key:#x}"),
-        amount: total_shares.to_string(),
-        deadline,
-        gateway: format!("{gateway_addr:#x}"),
-        chain_id: cfg.chain_id,
-        tx_hash: None,
-        payment_id: None,
-    };
-    let network_env = NetworkEnv::from_chain_id(cfg.chain_id);
-    log::info!(
-        "withdraw-router: starting agent={} order_id={} total_shares={} chain_id={} network_env={}",
-        audit.agent,
-        audit.order_id,
-        audit.amount,
-        audit.chain_id,
-        network_env.as_str()
-    );
-    if let Some(warn) = network_env.production_warning() {
-        log::warn!("withdraw-router: {warn}");
-    }
-
-    let state_dir = match cfg.resolve_state_dir() {
-        Ok(p) => p,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-
-    let _lock = match AgentLock::acquire(&state_dir, &agent_address) {
-        Ok(l) => l,
-        Err(RmpcError::ErrConcurrentInvocation) => {
-            record_audit(&audit.build(
-                AuditDecision::Refused,
-                Some("ErrConcurrentInvocation".to_string()),
-            ));
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: "ErrConcurrentInvocation".to_string(),
-                    message: Some(format!(
-                        "another rmpc invocation already holds the lock for agent {agent_address:#x}"
-                    )),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: None,
-                    checks: None,
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
-        }
-        Err(e) => {
-            log::error!("rmpc withdraw-router: lock acquire failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-
-    // -- Replay cache (AZ-RPC-2) -----------------------------------------
-    // Look up the paymentId before signing. Uses OP_WITHDRAW and total_shares
-    // as the amount field so that router-withdraw entries are disjoint from
-    // deposit entries (PAYMENTID-001).
-    let replay = match crate::replay_cache::ReplayCache::open(&state_dir) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: replay cache open failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-    match replay.lookup_op(
-        crate::replay_cache::OP_WITHDRAW,
-        cfg.chain_id,
-        gateway_addr,
-        agent_address,
-        order_id,
-        total_shares,
-        idempotency_key,
-    ) {
-        Ok(Some(prior_tx)) => {
-            let err = RmpcError::ErrOrderIdAlreadySubmitted {
-                tx_hash: prior_tx.clone(),
-            };
-            record_audit(&audit.build(
-                AuditDecision::Refused,
-                Some("ErrOrderIdAlreadySubmitted".to_string()),
-            ));
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: "ErrOrderIdAlreadySubmitted".to_string(),
-                    message: Some(format!("{err}")),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: Some(prior_tx),
-                    checks: None,
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
-        }
-        Ok(None) => {}
-        Err(e) => {
-            log::error!("rmpc withdraw-router: replay cache lookup failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    }
-
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: tokio runtime build failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-
-    let rpc = match cfg.rpc_client() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: rpc client init failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
+    let agent_address = session.agent_address;
 
     // -- Preflight --------------------------------------------------------
-    // Run the withdrawal-specific gateway preflight (chain id, code hash,
+    // The withdrawal-specific gateway preflight (chain id, code hash,
     // gateway paused, agent active+expiry, withdrawal window cap) with
     // totalShares as the amount.
-    let preflight_result = rt.block_on(async {
-        let pf = Preflight::new(&rpc, &cfg);
-        pf.run_withdraw_gateway(PreflightInputs {
-            signer_address: agent_address,
-            amount: total_shares,
-        })
-        .await
+    let preflight_result = session.rt.block_on(async {
+        Preflight::new(&session.rpc, &cfg)
+            .run_withdraw_gateway(PreflightInputs {
+                signer_address: agent_address,
+                amount: total_shares,
+            })
+            .await
     });
     let report = match preflight_result {
         Ok(r) => r,
         Err(err) => {
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&err).to_string())));
-            let checks = ChecksOutput::from_err_partial(&err);
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: error_name(&err).to_string(),
-                    message: Some(format!("{err}")),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: None,
-                    checks: Some(checks),
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
+            session.record(AuditDecision::Refused, Some(err.name().to_string()));
+            return session
+                .refusal(err.name())
+                .message(format!("{err}"))
+                .checks(ChecksOutput::from_err_partial(&err))
+                .emit(args.pretty);
         }
     };
 
@@ -489,29 +268,22 @@ pub fn run(args: Args) -> i32 {
     // at zero (N/A for withdrawals). The redeem itself burns the agent's
     // *vault shares*, which the gateway pulls from each source vault, so the
     // agent must (a) hold enough shares in each vault and (b) have approved
-    // the gateway to spend them. Previously this command checked neither and
-    // reported success right up to an on-chain revert. Run the same per-vault
-    // share allowance/balance/paused check the single-vault `withdraw` path
-    // uses, once per identity-bound (vault, shares) leg.
+    // the gateway to spend them. Run the same per-vault share
+    // allowance/balance/paused check the single-vault `withdraw` path uses,
+    // once per identity-bound (vault, shares) leg.
     for (vault, leg_shares) in vaults.iter().zip(shares_per_leg.iter()) {
-        let leg_result = rt.block_on(async {
-            withdraw_vault_preflight(&rpc, *vault, gateway_addr, agent_address, *leg_shares).await
+        let leg_result = session.rt.block_on(async {
+            Preflight::new(&session.rpc, &cfg)
+                .run_withdraw_vault(*vault, gateway_addr, agent_address, *leg_shares)
+                .await
         });
         if let Err(err) = leg_result {
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&err).to_string())));
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: error_name(&err).to_string(),
-                    message: Some(format!("vault {vault:#x}: {err}")),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: None,
-                    checks: Some(ChecksOutput::from_report(&report)),
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
+            session.record(AuditDecision::Refused, Some(err.name().to_string()));
+            return session
+                .refusal(err.name())
+                .message(format!("vault {vault:#x}: {err}"))
+                .checks(ChecksOutput::from_report(&report))
+                .emit(args.pretty);
         }
     }
 
@@ -521,77 +293,18 @@ pub fn run(args: Args) -> i32 {
             "rmpc withdraw-router: preview — {} legs, total_shares={total_shares}. Re-run with --confirm to proceed.",
             shares_per_leg.len()
         );
-        record_audit(&audit.build(
+        session.record(
             AuditDecision::Refused,
             Some("ErrConfirmNotProvided".to_string()),
-        ));
-        emit_refusal(
-            &WithdrawRouterFailure {
-                status: "refused",
-                error: "ErrConfirmNotProvided".to_string(),
-                message: Some(
-                    "Pass --confirm to execute. Inspect --get-router first to verify leg amounts."
-                        .to_string(),
-                ),
-                agent: Some(format!("{agent_address:#x}")),
-                order_id: Some(format!("{order_id:#x}")),
-                tx_hash: None,
-                checks: Some(ChecksOutput::from_report(&report)),
-            },
-            args.pretty,
         );
-        return EXIT_REFUSAL;
+        return session
+            .refusal("ErrConfirmNotProvided")
+            .message("Pass --confirm to execute. Inspect --get-router first to verify leg amounts.")
+            .checks(ChecksOutput::from_report(&report))
+            .emit(args.pretty);
     }
 
-    // -- Fees -------------------------------------------------------------
-    let fee_history_res = rt.block_on(async { rpc.fee_history(5, "latest", &[50.0]).await });
-    let fees = match fee_history_res {
-        Ok(fh) => match compute_fees(
-            &fh,
-            cfg.effective_max_fee_per_gas_cap(args.fee_cap_wei) as u128,
-            cfg.max_priority_fee_per_gas_cap
-                .map_or(u128::MAX, |v| v as u128),
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                record_audit(
-                    &audit.build(AuditDecision::Refused, Some(error_name(&e).to_string())),
-                );
-                emit_refusal(
-                    &WithdrawRouterFailure {
-                        status: "refused",
-                        error: error_name(&e).to_string(),
-                        message: Some(format!("{e}")),
-                        agent: Some(format!("{agent_address:#x}")),
-                        order_id: Some(format!("{order_id:#x}")),
-                        tx_hash: None,
-                        checks: Some(ChecksOutput::from_report(&report)),
-                    },
-                    args.pretty,
-                );
-                return EXIT_REFUSAL;
-            }
-        },
-        Err(e) => {
-            log::error!("rmpc withdraw-router: eth_feeHistory failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-
-    // -- Nonce ------------------------------------------------------------
-    let nonce_res = rt.block_on(async {
-        rpc.get_transaction_count(agent_address, Some("pending"))
-            .await
-    });
-    let nonce = match nonce_res {
-        Ok(n) => n,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: eth_getTransactionCount failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-
-    // -- Build + sign envelope -------------------------------------------
+    // -- Fees, nonce, sign, broadcast, receipt ----------------------------
     let calldata = RobotMoneyGateway::withdrawFromRouterCall {
         orderId: order_id,
         vaults: vaults.clone(),
@@ -602,130 +315,25 @@ pub fn run(args: Args) -> i32 {
     }
     .abi_encode();
 
-    let tx = build_eip1559(Eip1559Inputs {
-        chain_id: cfg.chain_id,
-        nonce,
-        to: gateway_addr,
-        gas_limit: args.gas_limit,
-        fees,
-        value: U256::ZERO,
-        input: Bytes::from(calldata),
-    });
-    let hash = signing_hash(&tx);
-    let mut hash_bytes = [0u8; 32];
-    hash_bytes.copy_from_slice(hash.as_slice());
-    let alloy_sig = match signer.sign_eip1559_hash(&hash_bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: envelope signing failed: {e}");
-            return EXIT_STARTUP_FAIL;
-        }
-    };
-    let raw = encode_signed(tx, alloy_sig);
-
-    // -- Broadcast --------------------------------------------------------
-    let tx_hash = match rt.block_on(async { broadcast(&rpc, &raw).await }) {
-        Ok(h) => h,
-        Err(e) => {
-            log::error!("rmpc withdraw-router: eth_sendRawTransaction failed: {e}");
-            record_audit(&audit.build(
-                AuditDecision::BroadcastFailed,
-                Some(error_name(&e).to_string()),
-            ));
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: error_name(&e).to_string(),
-                    message: Some(format!("{e}")),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: None,
-                    checks: Some(ChecksOutput::from_report(&report)),
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
-        }
-    };
-
-    let tx_hash_hex = format!("{tx_hash:#x}");
-    audit.tx_hash = Some(tx_hash_hex.clone());
-
-    // Insert into replay cache immediately after broadcast (optimistic).
-    if let Err(e) = replay.insert_op(
-        crate::replay_cache::OP_WITHDRAW,
-        cfg.chain_id,
-        gateway_addr,
-        agent_address,
-        order_id,
-        total_shares,
-        idempotency_key,
-        deadline,
-        &tx_hash_hex,
+    let confirmed = match session.submit(
+        &cfg,
+        Submission {
+            calldata,
+            gas_limit: args.gas_limit,
+            fee_cap_wei: args.fee_cap_wei,
+            receipt_timeout_secs: args.receipt_timeout_secs,
+            replay_deadline: deadline,
+            checks: &|| ChecksOutput::from_report(&report),
+        },
     ) {
-        log::warn!("rmpc withdraw-router: replay cache insert failed (non-fatal): {e}");
-    }
-
-    // -- Receipt ----------------------------------------------------------
-    let max_attempts = args.receipt_timeout_secs.min(u32::MAX as u64) as u32;
-    let receipt_res = rt.block_on(async {
-        wait_for_receipt_with(&rpc, tx_hash, Duration::from_secs(1), max_attempts.max(1)).await
-    });
-    let receipt = match receipt_res {
-        Ok(r) => r,
-        Err(e) => {
-            // AZ-RPC-1: timeout ≠ failure — do NOT remove the replay-cache
-            // entry. The tx may still land.
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&e).to_string())));
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: error_name(&e).to_string(),
-                    message: Some(format!("{e}")),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: Some(tx_hash_hex.clone()),
-                    checks: None,
-                },
-                args.pretty,
-            );
-            return EXIT_REFUSAL;
-        }
+        Ok(c) => c,
+        Err(abort) => return abort.exit(args.pretty),
     };
-
-    if !receipt.inner.status() {
-        // Confirmed on-chain failure: remove the optimistic replay-cache entry.
-        withdraw_router_finalize_on_failure(
-            &replay,
-            cfg.chain_id,
-            gateway_addr,
-            agent_address,
-            order_id,
-            total_shares,
-            idempotency_key,
-        );
-        let err = RmpcError::ErrTxReverted {
-            tx_hash: tx_hash_hex.clone(),
-        };
-        record_audit(&audit.build(AuditDecision::Reverted, Some("ErrTxReverted".to_string())));
-        emit_refusal(
-            &WithdrawRouterFailure {
-                status: "refused",
-                error: "ErrTxReverted".to_string(),
-                message: Some(format!("{err}")),
-                agent: Some(format!("{agent_address:#x}")),
-                order_id: Some(format!("{order_id:#x}")),
-                tx_hash: Some(tx_hash_hex.clone()),
-                checks: None,
-            },
-            args.pretty,
-        );
-        return EXIT_REFUSAL;
-    }
 
     // -- Decode AgentWithdrawalRouted log ---------------------------------
     let topic0 = RobotMoneyGateway::AgentWithdrawalRouted::SIGNATURE_HASH;
-    let log = receipt
+    let log = confirmed
+        .receipt
         .inner
         .logs()
         .iter()
@@ -734,23 +342,15 @@ pub fn run(args: Args) -> i32 {
         Some(l) => l,
         None => {
             log::error!("rmpc withdraw-router: AgentWithdrawalRouted event not found in receipt");
-            record_audit(&audit.build(
+            session.record(
                 AuditDecision::Refused,
                 Some("ErrRouterWithdrawLogMissing".to_string()),
-            ));
-            emit_refusal(
-                &WithdrawRouterFailure {
-                    status: "refused",
-                    error: "ErrRouterWithdrawLogMissing".to_string(),
-                    message: Some("AgentWithdrawalRouted event not found in receipt".to_string()),
-                    agent: Some(format!("{agent_address:#x}")),
-                    order_id: Some(format!("{order_id:#x}")),
-                    tx_hash: Some(tx_hash_hex.clone()),
-                    checks: None,
-                },
-                args.pretty,
             );
-            return EXIT_REFUSAL;
+            return session
+                .refusal("ErrRouterWithdrawLogMissing")
+                .message("AgentWithdrawalRouted event not found in receipt")
+                .tx_hash(confirmed.tx_hash_hex.clone())
+                .emit(args.pretty);
         }
     };
     let log_data = LogData::new_unchecked(log.topics().to_vec(), log.data().data.clone());
@@ -762,9 +362,9 @@ pub fn run(args: Args) -> i32 {
         }
     };
 
-    let block_number = receipt.block_number.unwrap_or(0);
-    audit.payment_id = Some(format!("{:#x}", decoded.paymentId));
-    record_audit(&audit.build(AuditDecision::Signed, None));
+    let block_number = confirmed.receipt.block_number.unwrap_or(0);
+    session.audit.payment_id = Some(format!("{:#x}", decoded.paymentId));
+    session.record(AuditDecision::Signed, None);
     let out = WithdrawRouterOutput {
         status: "success",
         payment_id: format!("{:#x}", decoded.paymentId),
@@ -776,222 +376,18 @@ pub fn run(args: Args) -> i32 {
         shares_per_leg: decoded.sharesPerLeg.iter().map(|s| s.to_string()).collect(),
         assets_per_leg: decoded.assetsPerLeg.iter().map(|a| a.to_string()).collect(),
         block_number,
-        tx_hash: tx_hash_hex,
-        gas_used: receipt.gas_used.to_string(),
-        effective_gas_price: receipt.effective_gas_price.to_string(),
+        tx_hash: confirmed.tx_hash_hex,
+        gas_used: confirmed.receipt.gas_used.to_string(),
+        effective_gas_price: confirmed.receipt.effective_gas_price.to_string(),
     };
     emit(&out, args.pretty);
     EXIT_OK
 }
 
-/// AZ-RPC-2 finalize-on-confirmed-failure: remove the optimistic router-
-/// withdraw replay-cache entry when the on-chain receipt shows status == 0.
-/// Only call on confirmed revert, never on timeout.
-#[allow(clippy::too_many_arguments)]
-fn withdraw_router_finalize_on_failure(
-    replay: &crate::replay_cache::ReplayCache,
-    chain_id: u64,
-    gateway: Address,
-    agent: Address,
-    order_id: B256,
-    total_shares: U256,
-    idempotency_key: B256,
-) {
-    if let Err(e) = replay.remove_op(
-        crate::replay_cache::OP_WITHDRAW,
-        chain_id,
-        gateway,
-        agent,
-        order_id,
-        total_shares,
-        idempotency_key,
-    ) {
-        log::warn!(
-            "rmpc withdraw-router: replay cache finalize-on-failure remove failed (non-fatal): {e}"
-        );
-    }
-}
-
-fn emit<T: serde::Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("withdraw-router output serialises");
-    println!("{json}");
-}
-
-fn emit_refusal(out: &WithdrawRouterFailure, pretty: bool) {
-    emit(out, pretty);
-}
-
-/// Map an [`RmpcError`] to its stable variant name for operator-visible output.
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrAgentNotAuthorized => "ErrAgentNotAuthorized",
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrCodeHashMismatch => "ErrCodeHashMismatch",
-        RmpcError::ErrChainIdMismatch => "ErrChainIdMismatch",
-        RmpcError::ErrGatewayPaused => "ErrGatewayPaused",
-        RmpcError::ErrAllowanceInsufficient => "ErrAllowanceInsufficient",
-        RmpcError::ErrBalanceInsufficient => "ErrBalanceInsufficient",
-        RmpcError::ErrVaultDisabled => "ErrVaultDisabled",
-        RmpcError::ErrPolicyExpired => "ErrPolicyExpired",
-        RmpcError::ErrLegUnavailable => "ErrLegUnavailable",
-        RmpcError::ErrSlippageBoundExceeded => "ErrSlippageBoundExceeded",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrOrderIdAlreadySubmitted { .. } => "ErrOrderIdAlreadySubmitted",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrAgentDepositLogMissing { .. } => "ErrAgentDepositLogMissing",
-        RmpcError::ErrVaultPaused => "ErrVaultPaused",
-        RmpcError::ErrWithdrawCapExceeded => "ErrWithdrawCapExceeded",
-        RmpcError::ErrShareBalanceInsufficient => "ErrShareBalanceInsufficient",
-        RmpcError::ErrShareAllowanceInsufficient => "ErrShareAllowanceInsufficient",
-        RmpcError::ErrAgentWithdrawLogMissing { .. } => "ErrAgentWithdrawLogMissing",
-        RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
-        RmpcError::ErrNotAllowlisted => "ErrNotAllowlisted",
-        RmpcError::ErrIcContractNotConfigured => "ErrIcContractNotConfigured",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::{Erc20, MockVault};
-    use crate::rpc::FailoverRpcClient;
-    use alloy_primitives::{address, hex as ahex, keccak256, U256};
-    use alloy_sol_types::SolCall;
-    use mockito::Matcher;
-    use serde_json::json;
-
-    const SIGNER: Address = address!("00000000000000000000000000000000000000aa");
-    const GATEWAY: Address = address!("0000000000000000000000000000000000000b00");
-    const VAULT: Address = address!("0000000000000000000000000000000000000d00");
-
-    fn enc_bool(v: bool) -> String {
-        let mut w = [0u8; 32];
-        w[31] = u8::from(v);
-        format!("0x{}", ahex::encode(w))
-    }
-
-    fn enc_u256(v: U256) -> String {
-        format!("0x{}", ahex::encode(v.to_be_bytes::<32>()))
-    }
-
-    fn jrpc_result(s: &str) -> String {
-        format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{s}"}}"#)
-    }
-
-    fn match_eth_call_selector(selector: &str) -> Matcher {
-        Matcher::AllOf(vec![
-            Matcher::PartialJson(json!({"method": "eth_call"})),
-            Matcher::Regex(format!(r#""data":"{selector}"#)),
-        ])
-    }
-
-    fn selector_hex<C: SolCall>() -> String {
-        format!("0x{}", ahex::encode(C::SELECTOR))
-    }
-
-    async fn install_vault_mocks(
-        server: &mut mockito::ServerGuard,
-        paused: bool,
-        allowance: U256,
-        balance: U256,
-    ) {
-        server
-            .mock("POST", "/")
-            .match_body(match_eth_call_selector(&selector_hex::<
-                MockVault::pausedCall,
-            >()))
-            .with_status(200)
-            .with_body(jrpc_result(&enc_bool(paused)))
-            .expect_at_least(0)
-            .create_async()
-            .await;
-        server
-            .mock("POST", "/")
-            .match_body(match_eth_call_selector(
-                &selector_hex::<Erc20::allowanceCall>(),
-            ))
-            .with_status(200)
-            .with_body(jrpc_result(&enc_u256(allowance)))
-            .expect_at_least(0)
-            .create_async()
-            .await;
-        server
-            .mock("POST", "/")
-            .match_body(match_eth_call_selector(
-                &selector_hex::<Erc20::balanceOfCall>(),
-            ))
-            .with_status(200)
-            .with_body(jrpc_result(&enc_u256(balance)))
-            .expect_at_least(0)
-            .create_async()
-            .await;
-    }
-
-    /// RPC-7: the router-withdraw preflight runs the per-leg share check and
-    /// REFUSES when the agent's vault-share allowance to the gateway is
-    /// insufficient, rather than returning success against a hard-coded zero.
-    #[tokio::test]
-    async fn router_leg_preflight_refuses_on_insufficient_allowance() {
-        let mut server = mockito::Server::new_async().await;
-        // not paused, allowance too low, balance ample.
-        install_vault_mocks(&mut server, false, U256::from(1u64), U256::from(u128::MAX)).await;
-        let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
-        let err = withdraw_vault_preflight(&rpc, VAULT, GATEWAY, SIGNER, U256::from(1_000u64))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, RmpcError::ErrShareAllowanceInsufficient),
-            "router leg must refuse on insufficient share allowance; got {err:?}"
-        );
-    }
-
-    /// RPC-7: the router-withdraw preflight REFUSES when the agent's vault
-    /// share balance cannot cover the leg's shares.
-    #[tokio::test]
-    async fn router_leg_preflight_refuses_on_insufficient_balance() {
-        let mut server = mockito::Server::new_async().await;
-        // not paused, ample allowance, balance too low.
-        install_vault_mocks(&mut server, false, U256::from(u128::MAX), U256::from(1u64)).await;
-        let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
-        let err = withdraw_vault_preflight(&rpc, VAULT, GATEWAY, SIGNER, U256::from(1_000u64))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, RmpcError::ErrShareBalanceInsufficient),
-            "router leg must refuse on insufficient share balance; got {err:?}"
-        );
-    }
-
-    /// With ample allowance and balance, a leg preflight passes — confirming
-    /// the check reads real values rather than always refusing.
-    #[tokio::test]
-    async fn router_leg_preflight_passes_with_ample_allowance_and_balance() {
-        let mut server = mockito::Server::new_async().await;
-        install_vault_mocks(
-            &mut server,
-            false,
-            U256::from(u128::MAX),
-            U256::from(u128::MAX),
-        )
-        .await;
-        let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
-        let result =
-            withdraw_vault_preflight(&rpc, VAULT, GATEWAY, SIGNER, U256::from(100u64)).await;
-        assert!(result.is_ok(), "expected ok, got {result:?}");
-    }
+    use alloy_primitives::keccak256;
 
     #[test]
     fn withdraw_from_router_selector_matches_canonical_signature() {
@@ -1014,18 +410,15 @@ mod tests {
     fn shares_per_leg_encodes_correctly() {
         // Verify the ABI encoding is stable for a two-leg call.
         let legs = vec![U256::from(60_000_000u64), U256::from(40_000_000u64)];
-        let vaults = vec![
-            alloy_primitives::Address::repeat_byte(1),
-            alloy_primitives::Address::repeat_byte(2),
-        ];
+        let vaults = vec![Address::repeat_byte(1), Address::repeat_byte(2)];
         let floors = vec![U256::from(59_700_000u64), U256::from(39_800_000u64)];
         let call = RobotMoneyGateway::withdrawFromRouterCall {
-            orderId: alloy_primitives::B256::ZERO,
+            orderId: B256::ZERO,
             vaults,
             sharesPerLeg: legs,
             minAssetsPerLeg: floors,
             deadline: 0u64,
-            idempotencyKey: alloy_primitives::B256::ZERO,
+            idempotencyKey: B256::ZERO,
         };
         let encoded = call.abi_encode();
         // Must start with the 4-byte selector.

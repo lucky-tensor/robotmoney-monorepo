@@ -755,3 +755,126 @@ fn parse_b256_hex_round_trip() {
 fn parse_b256_hex_rejects_wrong_length() {
     assert!(parse_b256_hex("0xabcd").is_err());
 }
+
+// ── Withdraw vault preflight (issue #312, RPC-7) ───────────────────────
+//
+// These moved here with `run_withdraw_vault` (issue #1285). They
+// previously lived in `commands::withdraw` and `commands::withdraw_router`
+// as two near-identical copies, because the rule itself lived in a command
+// module rather than in the policy layer.
+
+/// Install the three vault reads the withdraw preflight makes. `paused()`
+/// shares its selector with `gateway.paused()`, and the share
+/// allowance/balance reads are plain ERC-20 calls against the vault.
+async fn install_vault_mocks(
+    server: &mut mockito::ServerGuard,
+    paused: bool,
+    allowance: U256,
+    balance: U256,
+) {
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            RobotMoneyGateway::pausedCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_bool(paused)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            Erc20::allowanceCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_u256(allowance)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            Erc20::balanceOfCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_u256(balance)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+}
+
+#[tokio::test]
+async fn withdraw_vault_paused_refuses() {
+    let mut server = mockito::Server::new_async().await;
+    install_vault_mocks(
+        &mut server,
+        true,
+        U256::from(u128::MAX),
+        U256::from(u128::MAX),
+    )
+    .await;
+    let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
+    let cfg = config();
+    let err = Preflight::new(&rpc, &cfg)
+        .run_withdraw_vault(VAULT, GATEWAY, SIGNER, U256::from(100u64))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RmpcError::ErrVaultPaused), "got {err:?}");
+}
+
+/// RPC-7: the withdraw and router-withdraw paths must REFUSE when the
+/// agent's vault-share allowance to the gateway cannot cover the shares,
+/// rather than reporting success right up to an on-chain revert.
+#[tokio::test]
+async fn withdraw_vault_allowance_insufficient_refuses() {
+    let mut server = mockito::Server::new_async().await;
+    install_vault_mocks(&mut server, false, U256::from(1u64), U256::from(u128::MAX)).await;
+    let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
+    let cfg = config();
+    let err = Preflight::new(&rpc, &cfg)
+        .run_withdraw_vault(VAULT, GATEWAY, SIGNER, U256::from(1_000u64))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, RmpcError::ErrShareAllowanceInsufficient),
+        "got {err:?}"
+    );
+}
+
+/// RPC-7: same, for a share balance that cannot cover the shares.
+#[tokio::test]
+async fn withdraw_vault_balance_insufficient_refuses() {
+    let mut server = mockito::Server::new_async().await;
+    install_vault_mocks(&mut server, false, U256::from(u128::MAX), U256::from(1u64)).await;
+    let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
+    let cfg = config();
+    let err = Preflight::new(&rpc, &cfg)
+        .run_withdraw_vault(VAULT, GATEWAY, SIGNER, U256::from(1_000u64))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, RmpcError::ErrShareBalanceInsufficient),
+        "got {err:?}"
+    );
+}
+
+/// With ample allowance and balance the check passes — confirming it reads
+/// real values rather than always refusing.
+#[tokio::test]
+async fn withdraw_vault_preflight_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    install_vault_mocks(
+        &mut server,
+        false,
+        U256::from(u128::MAX),
+        U256::from(u128::MAX),
+    )
+    .await;
+    let rpc = FailoverRpcClient::new(vec![server.url()]).unwrap();
+    let cfg = config();
+    let result = Preflight::new(&rpc, &cfg)
+        .run_withdraw_vault(VAULT, GATEWAY, SIGNER, U256::from(100u64))
+        .await;
+    assert!(result.is_ok(), "expected ok, got {result:?}");
+}

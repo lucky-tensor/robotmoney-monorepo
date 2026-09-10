@@ -36,6 +36,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::gateway::{MockVault, VaultRegistry};
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{DecimalU256, Envelope, PartialBuilder};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 
@@ -291,16 +292,6 @@ async fn call_total_assets(
     let r = MockVault::totalAssetsCall::abi_decode_returns(&out, true)
         .map_err(|e| format!("abi decode: {e}"))?;
     Ok(r._0)
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-vaults output serialises");
-    println!("{json}");
 }
 
 #[cfg(test)]

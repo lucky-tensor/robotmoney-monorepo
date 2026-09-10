@@ -42,6 +42,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::gateway::{MockVault, RobotMoneyGateway, VaultRegistry};
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{DecimalU256, Envelope, PartialBuilder};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 
@@ -583,16 +584,6 @@ impl ReturnU256 for MockVault::totalSupplyReturn {
     fn into_u256(self) -> U256 {
         self._0
     }
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-vault output serialises");
-    println!("{json}");
 }
 
 #[cfg(test)]

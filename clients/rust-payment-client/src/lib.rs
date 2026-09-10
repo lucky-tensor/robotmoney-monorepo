@@ -21,6 +21,8 @@ pub mod gateway;
 pub mod logging;
 pub mod network_env;
 pub mod nonce;
+/// One owner for serialising a command's output document to stdout (issue #1285).
+pub mod output;
 pub mod policy;
 pub mod read_output;
 pub mod replay_cache;
@@ -35,3 +37,7 @@ pub mod scan_remediation_seams;
 pub mod scan_residual_seams;
 pub mod signer;
 pub mod tx;
+/// The orchestration owner for every `rmpc` write command — the shared
+/// prologue and epilogue `deposit`, `withdraw` and `withdraw-router` used to
+/// copy verbatim (issue #1285).
+pub mod write_path;

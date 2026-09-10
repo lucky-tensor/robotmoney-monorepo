@@ -33,6 +33,7 @@ use crate::fees::compute_fees;
 use crate::gateway::RouterGovernance;
 use crate::network_env::NetworkEnv;
 use crate::nonce::AgentLock;
+use crate::output::emit;
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
 use crate::signer::{require_production_grade_for_write, AgentSigner, SignerBackendKind};
 use crate::tx::{
@@ -137,7 +138,7 @@ pub fn run(args: Args) -> i32 {
         emit_failure(
             &ProposeFailure {
                 ok: false,
-                error: error_name(&err).to_string(),
+                error: err.name().to_string(),
                 message: Some(format!("{err}")),
             },
             args.pretty,
@@ -256,7 +257,7 @@ pub fn run(args: Args) -> i32 {
                 emit_failure(
                     &ProposeFailure {
                         ok: false,
-                        error: error_name(&e).to_string(),
+                        error: e.name().to_string(),
                         message: Some(format!("{e}")),
                     },
                     args.pretty,
@@ -317,7 +318,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &ProposeFailure {
                     ok: false,
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                 },
                 args.pretty,
@@ -336,7 +337,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &ProposeFailure {
                     ok: false,
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                 },
                 args.pretty,
@@ -391,39 +392,12 @@ pub fn run(args: Args) -> i32 {
             block_number,
         },
     };
-    emit_output(&out, args.pretty);
+    emit(&out, args.pretty);
     EXIT_OK
 }
 
-fn emit_output<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("propose output serialises");
-    println!("{json}");
-}
-
 fn emit_failure(out: &ProposeFailure, pretty: bool) {
-    emit_output(out, pretty);
-}
-
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-        _ => "ErrUnknown",
-    }
+    emit(out, pretty);
 }
 
 #[cfg(test)]

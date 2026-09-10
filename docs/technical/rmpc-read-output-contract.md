@@ -85,6 +85,21 @@ variant is a breaking change; see `docs/architecture.md` §7.2.
 | `ErrLegUnavailable` | `ErrLegUnavailable:` | `unavailable_leg` | `PortfolioRouter.VaultNotActive` / `VaultCapExceeded` |
 | `ErrSlippageBoundExceeded` | `ErrSlippageBoundExceeded:` | `slippage_bound_exceeded` | `PortfolioRouter.SlippageExceeded` |
 
+### 5.1 One owner for the variant-name table (issue #1285)
+
+`RmpcError::name()` in `clients/rust-payment-client/src/errors.rs` is the
+single source of the operator-visible name printed in a command's `error`
+field. Its match is **exhaustive with no wildcard arm**, so adding a
+variant without extending it is a compile error.
+
+Do not re-derive the name anywhere else. Eight modules previously carried
+their own copy of the table; two of them ended with `_ => "ErrUnknown"`,
+so a variant added after those copies were written reached operators as
+the string `ErrUnknown` — silently breaking the rule above with no
+compiler signal. Two more derived the name by splitting the `Display`
+output on whitespace, which is the same contract restated in a form that
+cannot be checked.
+
 All four variants are unit-free (no struct fields).  Their full `Display`
 strings are:
 
@@ -104,7 +119,7 @@ on-chain revert data decoded from a mined or simulated transaction.
 ## 6. Newly discovered integration points and risks
 
 - **`rmpc status` predates the envelope.** Migrating its output to `Envelope<StatusFound>` is a breaking change for any e2e test or downstream consumer that already parses the flat shape. Filed as an out-of-scope follow-up; not part of this scout. Recommend the migration land at the same time as the first `get-*` command, in a separate PR, so the operator-visible break is one event.
-- **Pretty-printer is per-command today.** `commands/status.rs::emit` carries its own pretty-vs-compact branch. Each new `get-*` command will duplicate that branch unless we lift `emit` into `read_output`. Not part of this scout — fold into the first read-command batch if duplication shows up.
+- **Pretty-printer is per-command today.** ~~`commands/status.rs::emit` carries its own pretty-vs-compact branch. Each new `get-*` command will duplicate that branch unless we lift `emit` into `read_output`.~~ **Resolved by issue #1285**: the duplication did show up — 19 byte-identical copies, two of which degraded to `unwrap_or_default()` and printed an empty document on a serialisation error. `emit` now lives in `clients/rust-payment-client/src/output.rs` and every command calls it. It is a sibling of `read_output` rather than part of it, because write commands emit through it too.
 - **No CLI-flag commitment.** This ADR does not pick the `--block <n>` / `--block latest` flag spelling, the `--json` vs `--pretty` toggle, or whether `chain_id` is read from config or queried via `eth_chainId`. Those belong to the per-batch issues; the envelope is pinning-agnostic.
 - **Reorg semantics are deferred.** `PartialBuilder` carries one `block_number` but does not enforce it across sub-reads. The first multi-read batch (`get-vault` is the most likely candidate) owns the choice between "pin once via `eth_blockNumber` then issue all sub-reads against that tag" and "issue against `latest` and surface drift via `_meta.block_drift`". Recommend the former — it's stricter, and §9's "block_number" is naturally a single value.
 - **Indexer source variant.** §9 explicitly allows future explorer enrichment as long as JSON-RPC remains the source of truth. If/when that lands, `Source` gains an `Indexer` variant and consumers learn to ignore commands with `source: "indexer"` for safety-critical flows. Out of scope here; flagged as a known future ADR trigger.

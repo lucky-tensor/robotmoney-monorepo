@@ -37,6 +37,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::gateway::RobotMoneyGateway;
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{Envelope, PartialBuilder};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 
@@ -254,14 +255,4 @@ async fn call_view_paused(
     let decoded = RobotMoneyGateway::pausedCall::abi_decode_returns(&out, true)
         .map_err(|e| format!("abi decode: {e}"))?;
     Ok(decoded._0)
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("get-gateway output serialises");
-    println!("{json}");
 }

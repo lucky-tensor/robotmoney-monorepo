@@ -32,6 +32,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::gateway::RobotMoneyGateway;
 use crate::network_env::NetworkEnv;
+use crate::output::emit;
 use crate::read_output::{DecimalU256, PartialBuilder};
 use crate::rpc::RawLog;
 
@@ -206,16 +207,6 @@ pub fn run(config_path: &Path, payment_id_hex: &str, pretty: bool) -> i32 {
             EXIT_STARTUP_FAIL
         }
     }
-}
-
-fn emit<T: Serialize>(out: &T, pretty: bool) {
-    let json = if pretty {
-        serde_json::to_string_pretty(out)
-    } else {
-        serde_json::to_string(out)
-    }
-    .expect("status output serialises");
-    println!("{json}");
 }
 
 #[cfg(test)]
