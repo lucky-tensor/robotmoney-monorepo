@@ -380,3 +380,48 @@ call sites that exist; no check would catch a future author introducing another
 `services/explorer-indexer/` fixture is guarded only by an environment variable
 (issue #1383). Re-verify by hand: run a built test binary with `docker` absent from
 `PATH` and confirm a non-zero exit, as recorded on PR #1381.
+
+---
+
+## A self-test's synthetic fixtures only exercise the shape that already works
+
+### Name
+`fixture-shape-blind-selftest`
+
+### Mechanism
+A guard ships with a `--self-test` that seeds synthetic trees and asserts the
+guard fires on each. The seeder writes those trees in one canonical shape, so
+every case shares whatever assumption the parser makes. A real input written in
+a *different but equally valid* shape is never seeded, so the parser's blindness
+to it is invisible: the self-test is green, the guard is green on the fixtures,
+and the defect is only discovered when the guard meets the real tree. The green
+self-test is what makes the shape dangerous — it reads as "this guard has been
+checked", and a reviewer has no way to see which input shapes were never tried.
+
+### Instance
+`.github/scripts/check_abi_binding_inventory.py`'s invariant (5) — "everything
+claimed as drift-gated is really regenerated" — matched `extract_abi` per
+*physical* line. `.github/scripts/generate_abi_bindings.sh:102-105` writes two of
+its destinations on a backslash **continuation** line, so the command line ends
+in `\` rather than a quoted path and the continuation line carries no
+`extract_abi` token. The guard reported `InvestmentCommitteePolicy.json` and
+`ConsensusRecommendationReceipt.json` as "not written by the generator", and
+`.github/workflows/suite-16-abi-drift.yml`'s `abi-drift-gate` was red on `dev`
+from the moment invariant (5) merged (issue #1389 / PR #1399) until issue #1419
+fixed it. The self-test shipped green throughout, because `_seed` emitted every
+`extract_abi` call on a single line — the one shape the parser handled. Worse
+than a false green on its own terms: the failing step runs *before* `forge
+build`, `Fail on ABI drift` and the explorer-indexer topic-0 cross-check, so for
+that whole window the suite aborted early and proved nothing for anyone,
+including issues #1346 and #1368 whose evidence lives in those later steps.
+
+### Detecting check
+`check_abi_binding_inventory.py --self-test`, run by
+`.github/workflows/suite-16-abi-drift.yml` before the real check, now seeds a
+continuation-style `extract_abi` call (`_seed`'s `continued` argument) in two
+cases: one asserting a continuation-written destination counts as generated, and
+one asserting a genuinely unwritten file is still caught when continuations are
+present, so the fix cannot degrade into "any quoted path anywhere counts". Both
+were confirmed red against the pre-fix parser before being made green. Generally:
+when a guard parses a real file, seed its self-test with every syntactic shape
+that file is allowed to use, not just the shape it happens to use most.

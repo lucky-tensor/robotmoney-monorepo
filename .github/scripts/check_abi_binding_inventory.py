@@ -138,6 +138,41 @@ def _workflow_gated_paths(workflow_text: str) -> set[str]:
     return paths
 
 
+def _logical_lines(shell_text: str) -> list[str]:
+    """Join backslash-continued physical lines into one logical line each.
+
+    A shell command may spread its arguments over several physical lines with a
+    trailing ``\\``. Matching a command per *physical* line therefore misses any
+    argument that sits on a continuation line: the first line ends in ``\\``
+    rather than the argument, and the continuation line no longer carries the
+    command name. That is issue #1419 — two `extract_abi` calls written that way
+    were reported as "not written by the generator" while the generator plainly
+    wrote them, and the gate was red on `dev` for it.
+
+    A `#` comment line is never continued: in shell the trailing backslash is
+    part of the comment text, so such a line is emitted as-is.
+    """
+    logical: list[str] = []
+    pending: str | None = None
+    for line in shell_text.splitlines():
+        if pending is None:
+            if line.lstrip().startswith("#"):
+                logical.append(line)
+                continue
+            pending = line
+        else:
+            pending = f"{pending} {line.strip()}"
+        stripped = pending.rstrip()
+        if stripped.endswith("\\"):
+            pending = stripped[:-1].rstrip()
+        else:
+            logical.append(pending)
+            pending = None
+    if pending is not None:
+        logical.append(pending)
+    return logical
+
+
 def _generator_destinations(generator_text: str) -> set[str]:
     """Return repository-relative paths written by the ABI generator.
 
@@ -162,7 +197,7 @@ def _generator_destinations(generator_text: str) -> set[str]:
             return path.removeprefix("./")
         return None
 
-    for line in generator_text.splitlines():
+    for line in _logical_lines(generator_text):
         stripped = line.lstrip()
         if stripped.startswith("#"):
             continue
@@ -343,7 +378,23 @@ jobs:
 
 def _seed(tmp: Path, gated: list[str], ungated: list[str], on_disk: list[str],
           diffed: list[str], triggers: list[str] | None = None,
-          generated: list[str] | None = None) -> Path:
+          generated: list[str] | None = None,
+          continued: list[str] | None = None) -> Path:
+    """Seed a synthetic repo tree.
+
+    `continued` names the generated paths whose `extract_abi` call is written
+    with a backslash continuation, so its destination argument lands on the next
+    physical line — the shape that made the guard red on `dev` (issue #1419).
+    """
+    continued_set = set(continued or ())
+
+    def write_for(path: str) -> str:
+        if path.endswith(".ts"):
+            return f'python3 - "out" "{path}" <<\'PYEOF\''
+        if path in continued_set:
+            return f'extract_abi "artifact" \\\n    "{path}"'
+        return f'extract_abi "artifact" "{path}"'
+
     root = tmp
     (root / ".github/scripts").mkdir(parents=True, exist_ok=True)
     (root / ".github/workflows").mkdir(parents=True, exist_ok=True)
@@ -358,12 +409,7 @@ def _seed(tmp: Path, gated: list[str], ungated: list[str], on_disk: list[str],
             ungated_header=UNGATED_HEADER,
             ungated_entries="\n".join(f"#   {e}" for e in ungated) or "#",
             generator_writes="\n".join(
-                (
-                    f'python3 - "out" "{path}" <<\'PYEOF\''
-                    if path.endswith(".ts")
-                    else f'extract_abi "artifact" "{path}"'
-                )
-                for path in (generated or gated)
+                write_for(path) for path in (generated or gated)
             ),
         )
     )
@@ -470,6 +516,55 @@ def _self_test() -> int:
                 ],
                 diffed=[f"{abi}/Erc20.json", f"{abi}/RobotMoneyGateway.json"],
                 generated=[f"{abi}/Erc20.json"],
+            ),
+            False,
+            "not written by the generator",
+        ),
+        (
+            # Regression guard for issue #1419: the generator writes two of its
+            # destinations on a backslash continuation line. A per-physical-line
+            # parser calls those files un-generated and turns the gate red on a
+            # tree that is in fact correct.
+            "gated file written by an extract_abi call split across a continuation",
+            dict(
+                gated=[f"{abi}/Erc20.json", f"{abi}/RobotMoneyGateway.json"],
+                ungated=[f"{abi}/MockVault.json — excerpt (tracking issue #1362)"],
+                on_disk=[
+                    f"{abi}/Erc20.json",
+                    f"{abi}/RobotMoneyGateway.json",
+                    f"{abi}/MockVault.json",
+                ],
+                diffed=[f"{abi}/Erc20.json", f"{abi}/RobotMoneyGateway.json"],
+                continued=[f"{abi}/RobotMoneyGateway.json"],
+            ),
+            True,
+            "",
+        ),
+        (
+            # The continuation-aware join must not become a blanket "any quoted
+            # path anywhere counts": a file nobody writes is still un-generated
+            # even when a continued call sits right above its inventory entry.
+            "un-written gated file is still caught when the generator uses continuations",
+            dict(
+                gated=[
+                    f"{abi}/Erc20.json",
+                    f"{abi}/RobotMoneyGateway.json",
+                    f"{abi}/VaultRegistry.json",
+                ],
+                ungated=[f"{abi}/MockVault.json — excerpt (tracking issue #1362)"],
+                on_disk=[
+                    f"{abi}/Erc20.json",
+                    f"{abi}/RobotMoneyGateway.json",
+                    f"{abi}/VaultRegistry.json",
+                    f"{abi}/MockVault.json",
+                ],
+                diffed=[
+                    f"{abi}/Erc20.json",
+                    f"{abi}/RobotMoneyGateway.json",
+                    f"{abi}/VaultRegistry.json",
+                ],
+                generated=[f"{abi}/Erc20.json", f"{abi}/RobotMoneyGateway.json"],
+                continued=[f"{abi}/RobotMoneyGateway.json"],
             ),
             False,
             "not written by the generator",
