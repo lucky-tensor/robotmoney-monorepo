@@ -330,6 +330,97 @@ async fn get_vaults_paused_vault_status() {
     assert_eq!(vaults[0]["total_assets"], "0");
 }
 
+/// A reverting `totalAssets()` must not be reported as the in-domain value
+/// `"0"` — the exact string `get_vaults_paused_vault_status` above proves a
+/// genuinely empty vault emits (issue #1390). The degraded value is `null`.
+#[tokio::test]
+async fn get_vaults_total_assets_revert_is_null_not_zero() {
+    let mut server = mockito::Server::new_async().await;
+    let chain_id = 31337u64;
+    let block_no = 0x31u64;
+
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(json!({"method": "eth_chainId"})))
+        .with_status(200)
+        .with_body(jrpc_result(&format!("0x{chain_id:x}")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(json!({"method": "eth_blockNumber"})))
+        .with_status(200)
+        .with_body(jrpc_result(&format!("0x{block_no:x}")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            VaultRegistry::listVaultsCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_address_array(&[VAULT])))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // Registry record reads fine — only the live TVL sub-read fails.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            VaultRegistry::getVaultCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_vault_record(
+            "RobotMoney USDC Vault",
+            USDC,
+            1_700_000_000,
+            0, // Active
+        )))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // vault.totalAssets() reverts.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::totalAssetsCall,
+        >()))
+        .with_status(200)
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}"#)
+        .expect_at_least(0)
+        .create_async()
+        .await;
+
+    let fix = RegistryFixture::build(&server.url(), chain_id);
+    let out = rmpc()
+        .args(["get-vaults", "--config", fix.config_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // The `partial` / `errors` mechanism is unchanged by #1390.
+    assert_eq!(v["partial"], true, "{v}");
+    let errs = v["errors"].as_array().unwrap();
+    assert!(
+        errs.iter().any(|e| e["field"] == "vaults[0].total_assets"),
+        "expected a vaults[0].total_assets error entry: {v}"
+    );
+
+    let vaults = v["data"]["vaults"].as_array().unwrap();
+    assert_eq!(vaults.len(), 1, "{v}");
+    // The registry half still decoded, so this is not a wholly-missing entry.
+    assert_eq!(vaults[0]["status"], "active");
+    // The degraded TVL is out of the successful-read domain.
+    assert!(
+        vaults[0]["total_assets"].is_null(),
+        "failed totalAssets must be null, not an in-domain number: {v}"
+    );
+}
+
 // ---- get-vault --address tests ----------------------------------------------
 
 /// Happy path: get-vault --address reads registry + live ERC-4626 state.
@@ -458,6 +549,122 @@ async fn get_vault_address_happy_path() {
         format!("{USDC:#x}")
     );
     assert_eq!(d["decimals"], 6);
+}
+
+/// Registry mode shares the #1390 defect surface: a reverting `totalAssets()`
+/// must serialise as `null`, never as the `"2000000"`-shaped decimal string
+/// `get_vault_address_happy_path` above proves a successful read emits.
+#[tokio::test]
+async fn get_vault_address_total_assets_revert_is_null() {
+    let mut server = mockito::Server::new_async().await;
+    let chain_id = 31337u64;
+    let block_no = 0x41u64;
+
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(json!({"method": "eth_chainId"})))
+        .with_status(200)
+        .with_body(jrpc_result(&format!("0x{chain_id:x}")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(json!({"method": "eth_blockNumber"})))
+        .with_status(200)
+        .with_body(jrpc_result(&format!("0x{block_no:x}")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            VaultRegistry::getVaultCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_vault_record(
+            "Robot Money Vault",
+            USDC,
+            1_715_000_000,
+            0, // Active
+        )))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::assetCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_address(USDC)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    let mut w = [0u8; 32];
+    w[31] = 6u8;
+    let dec_hex = format!("0x{}", ahex::encode(w));
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::decimalsCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&dec_hex))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // vault.totalAssets() reverts.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::totalAssetsCall,
+        >()))
+        .with_status(200)
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}"#)
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // totalSupply stays readable and non-zero, so `null` share_price can only
+    // come from the failed totalAssets read.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::totalSupplyCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_u256(U256::from(1_000_000u64))))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+
+    let fix = RegistryFixture::build(&server.url(), chain_id);
+    let out = rmpc()
+        .args([
+            "get-vault",
+            "--config",
+            fix.config_path.to_str().unwrap(),
+            "--address",
+            &format!("{VAULT:#x}"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["partial"], true, "{v}");
+    let errs = v["errors"].as_array().unwrap();
+    assert!(
+        errs.iter().any(|e| e["field"] == "total_assets"),
+        "expected a total_assets error entry: {v}"
+    );
+    assert!(
+        v["data"]["total_assets"].is_null(),
+        "failed totalAssets must be null in registry mode too: {v}"
+    );
+    assert_eq!(v["data"]["total_supply"].as_str().unwrap(), "1000000");
+    assert!(v["data"]["share_price"].is_null(), "{v}");
 }
 
 /// Unregistered address: getVault reverts → command exits non-zero.
