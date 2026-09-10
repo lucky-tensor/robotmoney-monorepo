@@ -15,7 +15,7 @@
 mod common;
 
 use alloy_primitives::{Address, U256};
-use common::try_pg_fixture;
+use common::pg_fixture;
 use explorer_indexer::{
     abi::{IGatewayEvents, IRouterGovernanceEvents, IVaultEvents},
     db::CountTable,
@@ -83,9 +83,7 @@ fn history_cfg(gateway: Address, vault: Address, gov: Option<Address>) -> Indexe
 /// account_history_events, keyed to the share_receiver address.
 #[tokio::test]
 async fn account_history_deposit_event_indexed() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gateway = Address::from([0x11u8; 20]);
     let vault = Address::from([0x22u8; 20]);
@@ -147,9 +145,7 @@ async fn account_history_deposit_event_indexed() {
 /// account_history_events, keyed to the owner address.
 #[tokio::test]
 async fn account_history_withdrawal_event_indexed() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gateway = Address::from([0x11u8; 20]);
     let vault = Address::from([0x22u8; 20]);
@@ -203,9 +199,7 @@ async fn account_history_withdrawal_event_indexed() {
 /// account_history_events, keyed to the owner address.
 #[tokio::test]
 async fn account_history_fee_charged_event_indexed() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gateway = Address::from([0x11u8; 20]);
     let vault = Address::from([0x22u8; 20]);
@@ -261,9 +255,7 @@ async fn account_history_fee_charged_event_indexed() {
 /// account_history_events, keyed to the agent address.
 #[tokio::test]
 async fn account_history_policy_change_authorized_indexed() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gateway = Address::from([0x11u8; 20]);
     let vault = Address::from([0x22u8; 20]);
@@ -327,9 +319,7 @@ async fn account_history_policy_change_authorized_indexed() {
 /// account_history_events, keyed to the voter address.
 #[tokio::test]
 async fn account_history_governance_vote_indexed() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gateway = Address::from([0x11u8; 20]);
     let vault = Address::from([0x22u8; 20]);
@@ -408,9 +398,7 @@ async fn account_history_governance_vote_indexed() {
 /// range are both stored and appear in block-ascending order when queried.
 #[tokio::test]
 async fn account_history_deposit_and_withdrawal_chronological() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let gateway = Address::from([0x11u8; 20]);
     let vault = Address::from([0x22u8; 20]);
@@ -509,9 +497,7 @@ async fn account_history_deposit_and_withdrawal_chronological() {
 /// must not insert duplicate account_history_events rows.
 #[tokio::test]
 async fn account_history_insert_is_idempotent() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     fx.db.upsert_chain(8453, "base", "test").await.unwrap();
 

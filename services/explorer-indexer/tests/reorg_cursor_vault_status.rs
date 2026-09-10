@@ -18,7 +18,7 @@
 mod common;
 
 use alloy_primitives::{Address, U256};
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::db::{CountTable, REORG_ROLLBACK_EXCLUSIONS};
 use explorer_indexer::{indexer::run_once, indexer::IndexerConfig, rpc::JsonRpc};
 use sqlx::postgres::PgPool;
@@ -45,9 +45,7 @@ fn stub_block(number: u64, hash: &str, parent_hash: &str, timestamp: u64) -> ser
 /// though a *separate* failed run row still records the (pre-reorg) cursor.
 #[tokio::test]
 async fn delete_above_block_caps_successful_run_cursor_to_root() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     db.upsert_chain(CHAIN, "base", "stub").await.unwrap();
 
@@ -80,9 +78,7 @@ async fn delete_above_block_caps_successful_run_cursor_to_root() {
 /// the next run re-indexes from block 0.
 #[tokio::test]
 async fn delete_above_block_full_wipe_clears_cursor() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     db.upsert_chain(CHAIN, "base", "stub").await.unwrap();
 
@@ -112,9 +108,7 @@ async fn delete_above_block_full_wipe_clears_cursor() {
 /// wiped blocks.
 #[tokio::test]
 async fn run_once_reorg_then_failure_resumes_from_root() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let cfg = IndexerConfig {
         chain_id: CHAIN,
@@ -268,9 +262,7 @@ async fn vault_status(db: &explorer_indexer::Db, vault: [u8; 20]) -> i16 {
 /// event roll back.
 #[tokio::test]
 async fn delete_above_block_reverts_vault_status_above_root() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     let vault = [0x11u8; 20];
     seed_vault(db, vault, 50).await;
@@ -314,9 +306,7 @@ async fn delete_above_block_reverts_vault_status_above_root() {
 /// re-derivation must not clobber an unchanged Active vault).
 #[tokio::test]
 async fn delete_above_block_leaves_unchanged_vault_status() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     let vault = [0x22u8; 20];
     seed_vault(db, vault, 10).await;
@@ -410,9 +400,7 @@ async fn seed_committee_activity(
 /// committee / regime-feed endpoints kept serving them as current state.
 #[tokio::test]
 async fn delete_above_block_clears_committee_votes_and_regime_snapshots() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     db.upsert_chain(CHAIN, "base", "stub").await.unwrap();
 
@@ -460,9 +448,7 @@ async fn delete_above_block_clears_committee_votes_and_regime_snapshots() {
 /// the documented exclusions. Nothing is covered by being remembered.
 #[tokio::test]
 async fn rollback_set_equals_live_block_scoped_schema() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let pool = raw_pool(&fx).await;
 
     let live = live_block_scoped_tables(&pool).await;
@@ -538,9 +524,7 @@ async fn rollback_set_equals_live_block_scoped_schema() {
 /// it fails for the same reason `committee_votes` was missed.
 #[tokio::test]
 async fn rollback_covers_a_block_scoped_table_added_after_compile_time() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let pool = raw_pool(&fx).await;
     fx.db.upsert_chain(CHAIN, "base", "stub").await.unwrap();
 
@@ -624,9 +608,7 @@ fn check_exclusion(
 /// entries: an empty list must not make this a rule that has never executed.
 #[tokio::test]
 async fn reorg_rollback_exclusions_are_documented_and_live() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let pool = raw_pool(&fx).await;
     let live = live_block_scoped_tables(&pool).await;
     let rollback: BTreeSet<String> = fx
@@ -677,9 +659,7 @@ async fn reorg_rollback_exclusions_are_documented_and_live() {
 /// FK-aware ordering, not just the membership.
 #[tokio::test]
 async fn rollback_order_deletes_children_before_parents() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     db.upsert_chain(CHAIN, "base", "stub").await.unwrap();
 

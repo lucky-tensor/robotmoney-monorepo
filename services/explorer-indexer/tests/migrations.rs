@@ -17,13 +17,14 @@
 //! embedded migration runs inside a transaction, plus the negative self-test
 //! proving that guard is not vacuous).
 //!
-//! Skips cleanly when Docker is not available so contributor laptops
-//! without docker still run `cargo test` green.
+//! Issue #1383 removed the "skips cleanly when Docker is not available" escape:
+//! `pg_fixture()` / `raw_pg()` are infallible and panic naming Docker/Postgres,
+//! so a run without a container is RED here, never a green zero-assertion pass.
 
 mod common;
 
 use alloy_primitives::U256;
-use common::{try_pg_fixture, try_raw_pg};
+use common::{pg_fixture, raw_pg};
 use explorer_indexer::db::{
     assert_migrations_are_transactional, embedded_schema_version, first_non_transactional,
     CountTable, DbError,
@@ -73,9 +74,7 @@ fn describe(out: &Output) -> String {
 /// exits 0, with no `--rpc-url` / `--gateway` / `--vault` supplied.
 #[tokio::test]
 async fn migrate_only_mode_runs_migrations_and_exits_zero() {
-    let Some(pg) = try_raw_pg().await else {
-        return;
-    };
+    let pg = raw_pg().await;
 
     let out = run_migrate_only(&pg.url);
     assert!(
@@ -119,9 +118,7 @@ async fn migrate_only_mode_runs_migrations_and_exits_zero() {
 /// `REFERENCES chains(chain_id)` foreign key cannot be built.
 #[tokio::test]
 async fn migrate_only_mode_exits_non_zero_on_a_broken_migration() {
-    let Some(pg) = try_raw_pg().await else {
-        return;
-    };
+    let pg = raw_pg().await;
 
     let db = Db::connect(&pg.url)
         .await
@@ -233,9 +230,7 @@ async fn indexer_run_count(db: &Db) -> i64 {
 /// skipped while a newer indexer image rolled out.
 #[tokio::test]
 async fn boot_refuses_a_stale_schema_and_names_both_versions() {
-    let Some(pg) = try_raw_pg().await else {
-        return;
-    };
+    let pg = raw_pg().await;
 
     let out = run_migrate_only(&pg.url);
     assert!(
@@ -309,9 +304,7 @@ async fn boot_refuses_a_stale_schema_and_names_both_versions() {
 /// process still exits 0 under `--once`.
 #[tokio::test]
 async fn boot_accepts_a_matching_schema_and_starts_indexing() {
-    let Some(pg) = try_raw_pg().await else {
-        return;
-    };
+    let pg = raw_pg().await;
 
     let out = run_migrate_only(&pg.url);
     assert!(
@@ -439,9 +432,7 @@ fn migration_atomicity_guard_goes_red_on_a_no_transaction_migration() {
 
 #[tokio::test]
 async fn migrations_create_all_tables() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     for t in [
         CountTable::Chains,
         CountTable::Contracts,
@@ -470,9 +461,7 @@ async fn migrations_create_all_tables() {
 /// account_positions view.
 #[tokio::test]
 async fn migration_0003_creates_multi_vault_tables() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     for t in [
         CountTable::RouterWeightSnapshots,
         CountTable::GovernanceProposals,
@@ -500,16 +489,14 @@ async fn migration_0003_creates_multi_vault_tables() {
 /// vault_snapshots row; assert the row is preserved and vault_address is
 /// set to the same value as contract (the backfill UPDATE in 0003).
 ///
-/// The fixture DB already has migration 0003 applied (try_pg_fixture runs
+/// The fixture DB already has migration 0003 applied (pg_fixture runs
 /// all migrations from scratch on a fresh Postgres container).  We insert
 /// a vault_snapshots row directly via the Db helper (which does NOT write
 /// vault_address, relying on the DB default / backfill path), then verify
 /// the vault_address column is non-NULL.
 #[tokio::test]
 async fn migration_0003_preserves_vault_snapshots_with_vault_address_backfilled() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     fx.db.upsert_chain(8453, "base", "stub").await.unwrap();
     let vault_addr = [0xAAu8; 20];
@@ -565,9 +552,7 @@ async fn migration_0003_preserves_vault_snapshots_with_vault_address_backfilled(
 
 #[tokio::test]
 async fn every_row_has_chain_id_and_block_number() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     // §11 acceptance criterion: each row carries chain_id and
     // block_number. Verified by interrogating information_schema:
     // every minimum table has a `chain_id` column, and every event

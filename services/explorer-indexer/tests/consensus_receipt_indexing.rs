@@ -17,13 +17,13 @@
 //!      and a release that landed above the root is rolled back in place.
 //!
 //! All tests skip cleanly when Docker is not available (the shared
-//! `try_pg_fixture` convention).
+//! `pg_fixture` convention).
 
 mod common;
 
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_sol_types::SolEvent as _;
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{
     abi::IConsensusRecommendationReceiptEvents,
     db::CountTable,
@@ -253,9 +253,7 @@ fn canonical_payload() -> Vec<u8> {
 
 #[tokio::test]
 async fn receipt_recorded_creates_row_with_digest_verified() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let payload = canonical_payload();
     let digest = alloy_primitives::keccak256(&payload);
@@ -331,9 +329,7 @@ async fn receipt_recorded_creates_row_with_digest_verified() {
 
 #[tokio::test]
 async fn receipt_recorded_digest_mismatch_stores_unverified_row() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // The URI serves bytes that do NOT hash to the on-chain digest.
     let served = b"{\"tampered\":true}".to_vec();
@@ -398,9 +394,7 @@ async fn receipt_recorded_digest_mismatch_stores_unverified_row() {
 /// `verified = false` and a NULL `payload_bytes`.
 #[tokio::test]
 async fn receipt_recorded_unreachable_uri_stores_unverified_row() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // Port 1 on loopback: nothing listens, so the GET fails fast.
     let dead_uri = "http://127.0.0.1:1/api/swarm/receipts/session-dead";
@@ -454,9 +448,7 @@ async fn receipt_recorded_unreachable_uri_stores_unverified_row() {
 
 #[tokio::test]
 async fn receipt_released_flips_released_columns() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let payload = canonical_payload();
     let digest = alloy_primitives::keccak256(&payload);
@@ -543,9 +535,7 @@ async fn receipt_released_flips_released_columns() {
 /// this test RED.
 #[tokio::test]
 async fn reorg_rollback_deletes_receipts_above_root_and_keeps_the_rest() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     let db = &fx.db;
     db.upsert_chain(CHAIN, "base", "stub").await.unwrap();
 
@@ -655,9 +645,7 @@ async fn reorg_rollback_deletes_receipts_above_root_and_keeps_the_rest() {
 /// rollback removes the receipt. Re-indexing then re-inserts it idempotently.
 #[tokio::test]
 async fn run_once_reorg_at_safe_head_rewrites_receipt_rows() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let payload = canonical_payload();
     let digest = alloy_primitives::keccak256(&payload);

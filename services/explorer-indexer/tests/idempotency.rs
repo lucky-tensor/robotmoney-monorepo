@@ -6,14 +6,12 @@
 mod common;
 
 use alloy_primitives::U256;
-use common::try_pg_fixture;
+use common::pg_fixture;
 use explorer_indexer::db::CountTable;
 
 #[tokio::test]
 async fn agent_deposit_insert_is_idempotent() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     fx.db.upsert_chain(8453, "base", "test").await.unwrap();
     let gateway = [0xaau8; 20];
     fx.db
@@ -70,9 +68,7 @@ async fn agent_deposit_insert_is_idempotent() {
 
 #[tokio::test]
 async fn vault_snapshot_insert_is_idempotent() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     fx.db.upsert_chain(8453, "base", "test").await.unwrap();
     let vault = [0xbbu8; 20];
     fx.db
@@ -113,9 +109,7 @@ async fn vault_snapshot_insert_is_idempotent() {
 
 #[tokio::test]
 async fn agent_policy_insert_roundtrip_with_owner() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
     fx.db.upsert_chain(8453, "base", "test").await.unwrap();
     let gateway = [0xaau8; 20];
     fx.db

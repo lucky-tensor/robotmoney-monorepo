@@ -8,14 +8,12 @@
 mod common;
 
 use alloy_primitives::Address;
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{indexer::run_once, indexer::IndexerConfig, rpc::JsonRpc};
 
 #[tokio::test]
 async fn rpc_failure_recorded_in_indexer_runs() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let stub = StubRpcServer::start().await;
     // chain_id is queried in some downstream paths but run_once only

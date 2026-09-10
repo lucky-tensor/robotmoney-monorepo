@@ -18,22 +18,25 @@
 mod common;
 
 use alloy_primitives::Address;
-use common::try_pg_fixture;
+use common::pg_fixture;
 use explorer_indexer::{db::CountTable, indexer::run_once, indexer::IndexerConfig, rpc::JsonRpc};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn populates_nine_tables_and_reindex_is_idempotent() {
-    if !rmpc_fork_e2e::can_run() {
-        eprintln!(
-            "[explorer-indexer] skipping: no RMPC_TESTNET_RPC_URL, no RMPC_FORK_RPC_URL, \
-             and anvil+fixture not available. Set RMPC_TESTNET_RPC_URL to run against \
-             the shared Geth devnet."
+    let has_testnet = std::env::var("RMPC_TESTNET_RPC_URL")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let has_fork = std::env::var("RMPC_FORK_RPC_URL")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !has_testnet && !has_fork {
+        panic!(
+            "[explorer-indexer-tests] RPC endpoint REQUIRED here but unavailable. \
+             Set RMPC_TESTNET_RPC_URL or RMPC_FORK_RPC_URL to run against the shared Geth \
+             devnet or an Anvil fork."
         );
-        return;
     }
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // Boot fork-anvil on a blocking thread (the harness uses
     // blocking reqwest + std::process). We hold the fixture for the

@@ -15,7 +15,7 @@ mod common;
 
 use alloy_primitives::Address;
 use alloy_sol_types::SolEvent as _;
-use common::{try_pg_fixture, StubRpcServer};
+use common::{pg_fixture, StubRpcServer};
 use explorer_indexer::{
     abi::IInvestmentCommitteePolicyEvents,
     db::CountTable,
@@ -196,9 +196,7 @@ fn program_stub_block10(stub: &StubRpcServer) {
 
 #[tokio::test]
 async fn agent_registered_creates_row() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let ic = ic_addr();
     let agent = agent_addr();
@@ -280,9 +278,7 @@ impl MemoServer {
 
 #[tokio::test]
 async fn vote_submitted_valid_memo_sets_verified_true() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     // First register the agent.
     let reg_tx: [u8; 32] = [0x01; 32];
@@ -351,9 +347,7 @@ async fn vote_submitted_valid_memo_sets_verified_true() {
 
 #[tokio::test]
 async fn vote_submitted_hash_mismatch_sets_verified_false() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let ic = ic_addr();
     let agent = agent_addr();
@@ -419,9 +413,7 @@ async fn vote_submitted_hash_mismatch_sets_verified_false() {
 
 #[tokio::test]
 async fn agent_revoked_sets_active_false() {
-    let Some(fx) = try_pg_fixture().await else {
-        return;
-    };
+    let fx = pg_fixture().await;
 
     let ic = ic_addr();
     let agent = agent_addr();
