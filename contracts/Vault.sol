@@ -616,79 +616,21 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
 
     /// @dev Flat, composition-blind two-pass allocator (§5.6, mirroring
     ///      pre-unification `BasketVault._routeDeposit`'s `perAsset = usdcAmount
-    ///      / n` split): pass 1 gives every active+eligible adapter an EQUAL
-    ///      share of `amount`, capped at its `capBps` headroom; pass 2 spreads
-    ///      any leftover into adapters that still have headroom. No adapter's
+    ///      / n` split): pass 1 gives every ACTIVE adapter an EQUAL share of
+    ///      `amount`, capped at its `capBps` headroom; pass 2 spreads any
+    ///      leftover into adapters that still have headroom. No adapter's
     ///      current balance or deviation from target is ever consulted here —
     ///      an overweight adapter gets exactly the same equal/capped share as
     ///      every other eligible adapter. Ineligible-but-active adapters are
-    ///      SKIPPED, not reverted (audit L-4); any unrouted remainder stays idle
+    ///      SKIPPED, not reverted (audit L-4) — they hold their share slot in
+    ///      pass 1 and pass 2 spreads it; any unrouted remainder stays idle
     ///      (counted by `totalAssets`) and emits `UnroutedDeposit`. This is the
     ///      ordinary deposit routing entrypoint (also reused by
     ///      `redeployRevokedIdle`); `forceRebalance`'s self-funded re-route leg
     ///      uses the separate deficit-first `_fillDeficitFirst` instead — no
     ///      deficit is ever fixed by an ordinary deposit.
     function _routeDeposit(uint256 amount) internal returns (uint256 remainingOut) {
-        if (amount == 0) return 0;
-
-        uint256 totalAfter = totalAssets(); // already includes the pulled USDC
-        uint256 remaining = amount;
-        uint256 len = adapters.length;
-
-        uint256 n = 0;
-        for (uint256 i = 0; i < len; i++) {
-            if (_isAdapterCounted(i)) n++;
-        }
-
-        if (n == 0) {
-            emit UnroutedDeposit(remaining);
-            return remaining;
-        }
-
-        uint256 equalShare = amount / n;
-
-        // Pass 1: equal share, capped at each adapter's absolute cap headroom.
-        if (equalShare > 0) {
-            for (uint256 i = 0; i < len && remaining > 0; i++) {
-                if (!_isAdapterCounted(i)) continue;
-                uint256 currentBalance = adapters[i].adapter.totalAssets();
-                uint256 capBalance = (totalAfter * adapters[i].capBps) / MAX_BPS;
-                if (currentBalance >= capBalance) continue;
-                uint256 headroom = capBalance - currentBalance;
-                uint256 allocation = equalShare < headroom ? equalShare : headroom;
-                if (allocation > remaining) allocation = remaining;
-                _allocateTo(i, allocation);
-                remaining -= allocation;
-            }
-        }
-
-        // Pass 2: spread any leftover (the equal-split remainder, or headroom
-        // exhausted for some adapters in pass 1) into adapters with headroom.
-        remaining = _spreadCapHeadroom(remaining, totalAfter);
-
-        if (remaining > 0) emit UnroutedDeposit(remaining);
-        return remaining;
-    }
-
-    /// @dev Shared "pass 2" of both allocators: spread `remaining` USDC into
-    ///      every active+eligible adapter that still has absolute cap headroom,
-    ///      in registry order, capping each leg at its headroom, and return the
-    ///      still-unrouted remainder. Extracted verbatim from the identical
-    ///      leftover-spread pass `_routeDeposit` and `_fillDeficitFirst` each
-    ///      carried so the shared loop is coded once (EIP-170 fit — issue #1127).
-    function _spreadCapHeadroom(uint256 remaining, uint256 totalAfter) internal returns (uint256) {
-        uint256 len = adapters.length;
-        for (uint256 i = 0; i < len && remaining > 0; i++) {
-            if (!_isAdapterCounted(i)) continue;
-            uint256 currentBalance = adapters[i].adapter.totalAssets();
-            uint256 capBalance = (totalAfter * adapters[i].capBps) / MAX_BPS;
-            if (currentBalance >= capBalance) continue;
-            uint256 headroom = capBalance - currentBalance;
-            uint256 allocation = headroom < remaining ? headroom : remaining;
-            _allocateTo(i, allocation);
-            remaining -= allocation;
-        }
-        return remaining;
+        return _route(amount, false);
     }
 
     /// @dev Deficit-first two-pass allocator: fill toward `min(equal-target,
@@ -701,32 +643,122 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
     ///      worst deficit. Ordinary deposit flow never calls this; see
     ///      `_routeDeposit` for the composition-blind path ordinary deposits use.
     function _fillDeficitFirst(uint256 amount) internal returns (uint256 remainingOut) {
+        return _route(amount, true);
+    }
+
+    /// @dev The two-pass body both allocators share. Pass 1 bounds each active
+    ///      adapter's leg — by its equal share of `amount` when `deficitFirst`
+    ///      is false, by its deficit to the equal-weight NAV target when true —
+    ///      and pass 2 spreads whatever a bound `capBps` left over.
+    function _route(uint256 amount, bool deficitFirst) internal returns (uint256) {
         if (amount == 0) return 0;
 
         uint256 totalAfter = totalAssets(); // already includes the pulled USDC
-        uint256 targetBps = _targetBpsFor();
-        uint256 remaining = amount;
-        uint256 len = adapters.length;
+        (uint256 remaining, uint256 capHeadroom) =
+            _allocatePass(amount, totalAfter, _activeAdapterCount(), amount, deficitFirst);
 
-        // Pass 1: fill toward min(equal target, capBps).
-        for (uint256 i = 0; i < len && remaining > 0; i++) {
-            if (!_isAdapterCounted(i)) continue;
-            uint256 effectiveTarget =
-                adapters[i].capBps < targetBps ? adapters[i].capBps : targetBps;
-            uint256 currentBalance = adapters[i].adapter.totalAssets();
-            uint256 targetBalance = (totalAfter * effectiveTarget) / MAX_BPS;
-            if (currentBalance >= targetBalance) continue;
-            uint256 deficit = targetBalance - currentBalance;
-            uint256 allocation = deficit < remaining ? deficit : remaining;
-            _allocateTo(i, allocation);
-            remaining -= allocation;
+        // Pass 2 is skipped when pass 1 already saw every eligible adapter at
+        // its `capBps` share: it could then only re-read them and skip. That is
+        // not a corner case — the devnet cap set (3334/3333/3333) sums to
+        // exactly `MAX_BPS` and so FLOORS to a couple of wei BELOW NAV, leaving
+        // those wei unplaceable by construction (#1391). `capHeadroom` scores an
+        // allocated adapter as holding `currentBalance + allocation`, an UPPER
+        // bound on what it really holds (a slippage-priced adapter marks at or
+        // below par), so it is a LOWER bound on real headroom: it can never
+        // over-state headroom and open pass 2 on a false premise, and pass 2
+        // re-reads and re-checks `capBps` against a real balance before placing
+        // anyway. It can under-state by an adapter's marking dust, so skipping
+        // may leave a few wei idle — they are still counted by `totalAssets`,
+        // still reported by `UnroutedDeposit`, and routed by the next deposit or
+        // `forceRebalance`.
+        if (remaining > 0 && capHeadroom > 0) {
+            (remaining,) = _allocatePass(remaining, totalAfter, 0, 0, false);
         }
-
-        // Pass 2: spread leftover into adapters with absolute cap headroom.
-        remaining = _spreadCapHeadroom(remaining, totalAfter);
 
         if (remaining > 0) emit UnroutedDeposit(remaining);
         return remaining;
+    }
+
+    /// @dev The one allocator loop every pass of both allocators runs: walk the
+    ///      ACTIVE adapters in registry order, skip the ineligible ones (audit
+    ///      L-4) but let them hold their rank slot, and place USDC up to each
+    ///      adapter's absolute `capBps` headroom. Returns the still-unrouted
+    ///      remainder and the absolute `capBps` headroom this pass left behind,
+    ///      summed over the adapters it visited (`_route` gates pass 2 on it).
+    ///
+    ///      Extracted from the identical leftover-spread pass `_routeDeposit`
+    ///      and `_fillDeficitFirst` each carried (EIP-170 fit — issue #1127),
+    ///      then widened to carry BOTH allocators' pass 1 as well. That widening
+    ///      is the room traded out of `Vault` to pay for the exact-partition
+    ///      targets below: three near-identical copies of this loop became one,
+    ///      which is what keeps the runtime bytecode under EIP-170 (#1396).
+    ///
+    ///      Ranking on ACTIVE (not active+eligible) is the same basis
+    ///      `_drawSurplusToIdle` and the drift views use, so the two halves of
+    ///      `forceRebalance` and the view an off-chain rebalancer reads can
+    ///      never disagree about the target set. A quarantined adapter's share
+    ///      is not redistributed within pass 1; it falls through to pass 2,
+    ///      which spreads it into whatever still has cap headroom.
+    ///
+    ///      Per-adapter absolute target:
+    ///
+    ///        * `n == 0` — the unbounded leftover spread (pass 2): `capBalance`.
+    ///        * `n > 0`, `deficitFirst` — `min(capBalance, equal-weight slice of
+    ///          `totalAfter`)`, so an adapter is filled toward its share of NAV.
+    ///        * `n > 0`, otherwise — `min(capBalance, currentBalance + equal
+    ///          share of `share`)`, the composition-blind flat split.
+    ///
+    ///      Both `n > 0` slices are DIFFERENCES OF TWO PREFIX SHARES rather than
+    ///      floored per-adapter products, so each slice set partitions its pot
+    ///      EXACTLY. Flooring `share / n` left `share % n` (up to `n - 1` wei)
+    ///      unplaced on every deposit whose size is not a multiple of `n`, which
+    ///      dragged pass 2 — and its second full round of adapter
+    ///      `totalAssets()` reads — into roughly two deposits in three on a
+    ///      three-adapter vault (#1396).
+    ///
+    ///      `min(capBalance, target)` is preserved throughout and `capBalance`
+    ///      is the same expression in both passes, so no adapter can ever be
+    ///      filled past its `capBps` share of NAV.
+    function _allocatePass(
+        uint256 remaining,
+        uint256 totalAfter,
+        uint256 n,
+        uint256 share,
+        bool deficitFirst
+    ) internal returns (uint256, uint256 capHeadroom) {
+        uint256 rank;
+        uint256 prefix;
+        for (uint256 i = 0; i < adapters.length && remaining > 0; i++) {
+            if (!adapters[i].active) continue;
+            uint256 target;
+            if (n > 0) {
+                if (deficitFirst) {
+                    target = _equalWeightBalance(totalAfter, rank, n);
+                } else {
+                    target = (share * (rank + 1)) / n;
+                    (target, prefix) = (target - prefix, target);
+                }
+                rank++;
+            }
+            if (!_isAdapterEligible(address(adapters[i].adapter))) continue;
+            uint256 balance = adapters[i].adapter.totalAssets();
+            uint256 capBalance = (totalAfter * adapters[i].capBps) / MAX_BPS;
+            if (n == 0) {
+                target = capBalance;
+            } else {
+                if (!deficitFirst) target += balance;
+                if (target > capBalance) target = capBalance;
+            }
+            if (target > balance) {
+                target -= balance;
+                if (target > remaining) target = remaining;
+                _allocateTo(i, target);
+                remaining -= target;
+                balance += target;
+            }
+            if (capBalance > balance) capHeadroom += capBalance - balance;
+        }
+        return (remaining, capHeadroom);
     }
 
     /// @dev Transfer USDC to an eligible adapter and deploy it with the per-leg
@@ -1400,12 +1432,19 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
     ///      catastrophic-slippage extraction. Only used by `forceRebalance`.
     function _drawSurplusToIdle() internal returns (uint256 moved) {
         uint256 total = totalAssets();
-        uint256 targetBps = _targetBpsFor();
-        uint256 targetBalance = (total * targetBps) / MAX_BPS;
+        uint256 activeCount = _activeAdapterCount();
+        uint256 rank;
 
         uint256 len = adapters.length;
         for (uint256 i = 0; i < len; i++) {
-            if (!_isAdapterCounted(i)) continue;
+            if (!adapters[i].active) continue;
+            // Same exactly-partitioning target set `_fillDeficitFirst` fills
+            // toward, so the surplus drawn out here is only ever the surplus the
+            // re-route leg can place — no ~1 bps of NAV round-trips through the
+            // adapters for nothing (#1396).
+            uint256 targetBalance = _equalWeightBalance(total, rank, activeCount);
+            rank++;
+            if (!_isAdapterEligible(address(adapters[i].adapter))) continue;
             IPositionAdapter adpt = adapters[i].adapter;
             uint256 bal = adpt.totalAssets();
             if (bal <= targetBalance) continue;
@@ -1615,9 +1654,53 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
         }
     }
 
-    function _targetBpsFor() internal view returns (uint256) {
+    /// @dev The `rank`-th active adapter's slice of `total` when `active`
+    ///      adapters split it equally: base share `MAX_BPS / active`, with the
+    ///      `MAX_BPS % active` leftover bps handed out one each to the lowest
+    ///      ranks so the target set sums to EXACTLY `MAX_BPS`.
+    ///
+    ///      The old `_targetBpsFor()` returned the FLOORED `MAX_BPS / active`
+    ///      for every adapter — 3333 for a three-adapter vault, so the targets
+    ///      summed to 9999 bps and a permanent ~1 bps of NAV sat above every
+    ///      adapter's target. `_drawSurplusToIdle` pulled that bps out and
+    ///      `_fillDeficitFirst` had nowhere to put it back, so `forceRebalance`
+    ///      round-tripped it through the adapters for nothing, and
+    ///      `getAdapterDrift` showed a permanent phantom over-target drift
+    ///      (issues #1391, #1396).
+    ///
+    ///      The slice is the DIFFERENCE OF TWO PREFIX SHARES rather than
+    ///      `total * bps / MAX_BPS`, so the slices partition `total` EXACTLY.
+    ///      Distributing the remainder bps is necessary but not sufficient:
+    ///      flooring each `total * bps / MAX_BPS` independently still loses up
+    ///      to `active - 1` wei (issue #1391).
+    ///
+    ///      Callers still take `min(capBps balance, target)`, so a distributed
+    ///      bps can never lift an adapter above its own cap.
+    function _equalWeightBalance(uint256 total, uint256 rank, uint256 active)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (active == 0) return 0;
+        uint256 base = MAX_BPS / active;
+        uint256 extra = MAX_BPS % active;
+        uint256 cumBefore = base * rank + (rank < extra ? rank : extra);
+        uint256 cumAfter = cumBefore + base + (rank < extra ? 1 : 0);
+        return (total * cumAfter) / MAX_BPS - (total * cumBefore) / MAX_BPS;
+    }
+
+    /// @dev Equal-weight target in bps for the adapter at registry `index`, or 0
+    ///      when it is inactive. The one definition every consumer shares — the
+    ///      rebalance legs and the drift views — so the target set can never
+    ///      drift out of summing to `MAX_BPS` in one place but not another.
+    function _targetBpsForIndex(uint256 index) internal view returns (uint256) {
+        if (!adapters[index].active) return 0;
         uint256 active = _activeAdapterCount();
-        return active == 0 ? 0 : MAX_BPS / active;
+        uint256 rank;
+        for (uint256 i = 0; i < index; i++) {
+            if (adapters[i].active) rank++;
+        }
+        return MAX_BPS / active + (rank < MAX_BPS % active ? 1 : 0);
     }
 
     function _activeAdapterCount() internal view returns (uint256 count) {
@@ -1668,7 +1751,7 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
             info.active,
             info.isExact,
             info.adapter.totalAssets(),
-            info.active ? _targetBpsFor() : 0
+            _targetBpsForIndex(index)
         );
     }
 
@@ -1689,12 +1772,17 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
         drifts = new int256[](len);
 
         uint256 total = totalAssets();
-        uint256 targetBps = _targetBpsFor();
+        uint256 activeCount = _activeAdapterCount();
+        uint256 rank;
 
         for (uint256 i = 0; i < len; i++) {
             if (!adapters[i].active) continue;
+            // `targetBalances` sum to the WHOLE of `total`, so an off-chain
+            // rebalancer no longer reads a permanent phantom over-target drift
+            // of the ~1 bps the floored target set could not name (#1396).
+            targetBalances[i] = _equalWeightBalance(total, rank, activeCount);
+            rank++;
             currentBalances[i] = adapters[i].adapter.totalAssets();
-            targetBalances[i] = (total * targetBps) / MAX_BPS;
             drifts[i] = int256(currentBalances[i]) - int256(targetBalances[i]);
         }
     }
@@ -1705,7 +1793,14 @@ contract Vault is ERC4626, AdminFloorAccessControlCounter, ReentrancyGuard {
     }
 
     /// @notice Equal-weight target allocation per active adapter in basis points.
+    /// @dev    The FLOORED base share, `MAX_BPS / activeAdapterCount()`. It is a
+    ///         single scalar and so cannot carry the `MAX_BPS % active`
+    ///         remainder bps the rebalance legs distribute to the lowest-indexed
+    ///         active adapters (#1391, #1396) — for the exact per-adapter target
+    ///         read `getAdapterInfo(index)` or `getAdapterDrift()`, whose
+    ///         targets sum to the whole NAV.
     function currentTargetBps() external view returns (uint256) {
-        return _targetBpsFor();
+        uint256 active = _activeAdapterCount();
+        return active == 0 ? 0 : MAX_BPS / active;
     }
 }

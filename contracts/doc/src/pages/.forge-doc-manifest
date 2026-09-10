@@ -152,6 +152,7 @@ contracts/test/contract.EmergencyExactAdapter.mdx
 contracts/test/contract.EmergencyRevertingAdapter.mdx
 contracts/test/contract.EmergencyRevokedIdleTest.mdx
 contracts/test/contract.EmergencySkipContinueTest.mdx
+contracts/test/contract.EqualWeightHarness.mdx
 contracts/test/contract.ExactHoldAdapter.mdx
 contracts/test/contract.ExactnessTransitionTimelockTest.mdx
 contracts/test/contract.FeatureFlagsTest.mdx
@@ -220,6 +221,7 @@ contracts/test/contract.PortfolioRouterTest.mdx
 contracts/test/contract.PosConfAavePool.mdx
 contracts/test/contract.PosConfComet.mdx
 contracts/test/contract.PosConfMorphoVault.mdx
+contracts/test/contract.ProbeHoldAdapter.mdx
 contracts/test/contract.ReadCountingAdapter.mdx
 contracts/test/contract.RecordingSwapRouter.mdx
 contracts/test/contract.ReentrantVault.mdx
@@ -267,6 +269,7 @@ contracts/test/contract.UniV4PositionMockVenue.mdx
 contracts/test/contract.UnifiedVaultConformanceTestExact.mdx
 contracts/test/contract.UnifiedVaultConformanceTestRedeemOnly.mdx
 contracts/test/contract.UnifiedVaultDepositTest.mdx
+contracts/test/contract.UnifiedVaultEqualWeightTargetsTest.mdx
 contracts/test/contract.UnifiedVaultRedemptionModeTest.mdx
 contracts/test/contract.UniswapV4RouterEligibilityIntegrationTest.mdx
 contracts/test/contract.UnprotectedStubVault.mdx

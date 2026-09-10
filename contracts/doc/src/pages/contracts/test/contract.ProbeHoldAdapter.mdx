@@ -1,0 +1,270 @@
+---
+title: "ProbeHoldAdapter"
+---
+
+# ProbeHoldAdapter
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/82c1c2dc7d20af53bfb9d50a2efd80ad0cb8a34a/contracts/test/UnifiedVaultEqualWeightTargets.t.sol)
+
+**Inherits:** [IPositionAdapter](/contracts/interfaces/interface.IPositionAdapter)
+
+<i>
+
+A lossless 1:1 `IPositionAdapter` whose `totalAssets()` reads a dedicated
+storage slot NOTHING else in the contract touches. `totalAssets()` is
+`view`, so the vault reaches it through `STATICCALL` and it cannot
+increment a counter itself. Instead a test brackets the call under test
+with `vm.record()` / `vm.accesses()` and counts `SLOAD`s of `probe`
+(slot 0) — exactly one per `totalAssets()` call. Mirrors
+`ReadCountingAdapter` in `RobotMoneyVaultRouteDeposit.t.sol` (#1391),
+retargeted at the unified `IPositionAdapter` surface. TEST FIXTURE.
+
+</i>
+
+## Constants
+
+### USDC
+
+The USDC token address this adapter denominates in. Consumed
+unchanged by the vault's `_isAdapterEligible` asset-match probe.
+
+```solidity
+address public immutable USDC;
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `address` |  |
+
+### VAULT
+
+The single vault this adapter is bound to. Load-bearing identity
+binding that prevents cross-vault authority substitution; MUST NOT
+be relaxed for adapter reuse (spec §2, ADR-0010 §2).
+
+```solidity
+address public immutable VAULT;
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `address` |  |
+
+### SINK
+
+```solidity
+address internal constant SINK = address(0xdEaD);
+```
+
+## State Variables
+
+### probe
+
+<i>
+
+Slot 0 — read ONLY by `totalAssets()`. See `PROBE_SLOT` in the test.
+
+</i>
+
+```solidity
+uint256 private probe;
+```
+
+## Functions
+
+<a id="constructor-address-address"></a>
+
+### constructor
+
+```solidity
+constructor(address usdc_, address vault_);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| usdc_ | `address` |  |
+| vault_ | `address` |  |
+
+<a id="onlyvault"></a>
+
+### onlyVault
+
+```solidity
+modifier onlyVault();
+```
+
+<a id="setprobe-uint256"></a>
+
+### setProbe
+
+Exists so the probe slot is provably writable and the optimizer
+cannot fold its `SLOAD` away as a known zero.
+
+```solidity
+function setProbe(uint256 probe_) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| probe_ | `uint256` |  |
+
+<a id="deploy-uint256-uint256"></a>
+
+### deploy
+
+Convert `usdcIn` USDC (transferred to the adapter first, same
+choreography as v1 `_allocateTo`) into the adapter's position.
+
+<i>
+
+`onlyVault` (reverts `OnlyVault`). Also reverts on venue failure,
+the oracle staleness/deviation guard (asset adapters), and the
+implementation exposure cap (e.g. `MorphoAdapter.maxExposure`).
+
+</i>
+
+```solidity
+function deploy(uint256 usdcIn, uint256 minValueOut)
+        external
+        onlyVault
+        returns (uint256 valueAdded);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| usdcIn | `uint256` | USDC (6-decimal units) the vault has already `safeTransfer`ed. |
+| minValueOut | `uint256` | Slippage floor; the adapter MUST revert<br/>`SlippageExceeded` when the realized USDC-denominated value added<br/>is below this (no clamp on the deploy path). |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| valueAdded | `uint256` | USDC-denominated increase in `totalAssets()` from this<br/>call. Exact adapters MUST return exactly `usdcIn`. |
+
+<a id="withdraw-uint256-uint256"></a>
+
+### withdraw
+
+Liquidate position back to USDC and deliver it to the vault.
+
+<i>
+
+`onlyVault` (reverts `OnlyVault`).
+
+</i>
+
+```solidity
+function withdraw(uint256 usdcWanted, uint256 minUsdcOut)
+        external
+        onlyVault
+        returns (uint256 usdcOut);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| usdcWanted | `uint256` | Target USDC; `type(uint256).max` means "withdraw all"<br/>(emergency drains, adapter retirement). Clamped at liquidatable<br/>balance — shortfall against `usdcWanted` clamps. |
+| minUsdcOut | `uint256` | Effective floor is `max(minUsdcOut, adapterInternalFloor)`;<br/>shortfall against the floor REVERTS `SlippageExceeded`. `0` means<br/>"adapter's own floor" (not "no floor"). Shortfall against<br/>`usdcWanted` above the floor CLAMPS (returns the realized `usdcOut`). |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| usdcOut | `uint256` | Realized USDC delivered to the vault. |
+
+<a id="totalassets"></a>
+
+### totalAssets
+
+Live USDC-denominated value of the position (principal + accrued
+interest for lending; TWAP/oracle-priced balance for assets).
+Spot (`slot0`) is never read here (ORA-1). MAY revert fail-closed
+when the price source is unusable; MUST return 0 (without touching
+the oracle) on a zero balance (SUP-5).
+
+```solidity
+function totalAssets() external view returns (uint256);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint256` |  |
+
+<a id="isexact"></a>
+
+### isExact
+
+Bytecode-level exactness declaration: `true` iff `deploy`/`withdraw`
+are 1:1 and `totalAssets()` is a hard redemption claim (lending),
+`false` for slippage-priced asset adapters.
+
+<i>
+
+At-registration cross-check + monitoring ONLY — never a per-call
+gate. Share-critical paths read the vault-attested
+`AdapterInfo.isExact` (spec §2.2, C2).
+
+</i>
+
+```solidity
+function isExact() external pure returns (bool);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `bool` |  |
+
+<a id="harvestrewards"></a>
+
+### harvestRewards
+
+Permissionlessly claim venue rewards, convert to USDC, and credit
+the vault (never a caller-supplied address, INV-1; never stranded,
+INV-2). MUST NOT revert when there is nothing to claim.
+
+```solidity
+function harvestRewards() external;
+```
+
+<a id="sweepforeigntoken-address"></a>
+
+### sweepForeignToken
+
+Permissionlessly sweep a NON-protected foreign token to the fixed
+quarantine address (INV-1/INV-2). Protected set: USDC, the venue
+receipt/share token, and the custodied basket token — reverts on
+those; they stay in NAV and accrue pro-rata.
+
+```solidity
+function sweepForeignToken(address token) external;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| token | `address` | Foreign ERC-20 to quarantine. |
+
+## Errors
+
+### TokenProtected
+
+```solidity
+error TokenProtected();
+```
+

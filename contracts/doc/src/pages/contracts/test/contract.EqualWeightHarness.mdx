@@ -1,0 +1,76 @@
+---
+title: "EqualWeightHarness"
+---
+
+# EqualWeightHarness
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/82c1c2dc7d20af53bfb9d50a2efd80ad0cb8a34a/contracts/test/UnifiedVaultEqualWeightTargets.t.sol)
+
+**Inherits:** [Vault](/contracts/contract.Vault)
+
+<i>
+
+Exposes the allocator on its own so a test can count the adapter reads
+`_routeDeposit` makes without the surrounding `deposit()` NAV reads.
+
+</i>
+
+## Functions
+
+<a id="constructor-ierc20-address-address-address"></a>
+
+### constructor
+
+```solidity
+constructor(IERC20 asset_, address feeRecipient_, address admin_, address emergency_)
+        Vault(
+            asset_,
+            "Robot Money USDC",
+            "rmUSDC",
+            type(uint256).max,
+            type(uint256).max,
+            0,
+            200,
+            1e30,
+            feeRecipient_,
+            admin_,
+            emergency_
+        );
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| asset_ | `IERC20` |  |
+| feeRecipient_ | `address` |  |
+| admin_ | `address` |  |
+| emergency_ | `address` |  |
+
+<a id="exposed_routedeposit-uint256"></a>
+
+### exposed_routeDeposit
+
+<i>
+
+Call with `amount` USDC ALREADY transferred into the vault — exactly
+the state `_deposit` hands `_routeDeposit`.
+
+</i>
+
+```solidity
+function exposed_routeDeposit(uint256 amount) external returns (uint256);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| amount | `uint256` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint256` |  |
+
