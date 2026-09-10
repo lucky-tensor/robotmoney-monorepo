@@ -10,6 +10,13 @@
 //! arguments. The normal boot path never migrates, so a broken migration
 //! fails a deployment's explicit migrate step instead of crash-looping a
 //! long-running container against a half-migrated database.
+//!
+//! Because the boot path never migrates, it instead *checks* (issue #1392):
+//! the highest migration version embedded in this binary must equal the highest
+//! version applied in `_sqlx_migrations`, or the process refuses to start and
+//! names both versions. That is the loud failure auto-migration used to provide;
+//! without it an indexer on a stale schema loops silently and no healthcheck
+//! notices.
 
 use alloy_primitives::Address;
 use clap::Parser;
@@ -152,6 +159,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The normal boot path deliberately does NOT migrate — the schema must
     // already have been migrated by a prior `--migrate-only` run.
     //
+    // Issue #1392: removing the boot-time migrate (#1359) also removed the only
+    // thing that made a schema mismatch *fail*. An indexer started against a
+    // stale schema used to just loop, failing every tick, with no healthcheck to
+    // notice. So assert here that the version this binary embeds equals the
+    // version the database has applied, and refuse to start otherwise. This
+    // restores the loud failure without restoring auto-migration: the indexer
+    // still never writes schema, it just declines to run against one it does not
+    // match. The error names both versions.
+    let schema_version = match db.assert_schema_matches_embedded().await {
+        Ok(v) => v,
+        Err(e) => {
+            // Emit the operator-facing message and exit non-zero. Returning the
+            // error from `main` would print its *Debug* form instead —
+            // `SchemaVersionMismatch { embedded: 15, applied: "14" }` — which
+            // names the versions but not what to do about them.
+            error!("{e}");
+            std::process::exit(1);
+        }
+    };
+    info!(
+        schema_version,
+        "schema version matches embedded migrations; starting indexer"
+    );
+
     // clap enforces these three via `required_unless_present = "migrate_only"`,
     // so the `ok_or` arms are unreachable on the normal path; they exist so a
     // future CLI edit that drops the constraint fails with a message instead

@@ -11,6 +11,12 @@
 //! compiled `indexer` binary rather than the library: they are the coverage for
 //! the CLI's migrate-only mode now that the normal boot path no longer migrates.
 //!
+//! Issue #1392 adds the two `boot_*` tests (the normal boot path must refuse a
+//! schema whose applied version differs from the embedded one, and must start
+//! normally when they agree) and the two `migration_atomicity_*` tests (every
+//! embedded migration runs inside a transaction, plus the negative self-test
+//! proving that guard is not vacuous).
+//!
 //! Skips cleanly when Docker is not available so contributor laptops
 //! without docker still run `cargo test` green.
 
@@ -18,8 +24,13 @@ mod common;
 
 use alloy_primitives::U256;
 use common::{try_pg_fixture, try_raw_pg};
-use explorer_indexer::db::CountTable;
+use explorer_indexer::db::{
+    assert_migrations_are_transactional, embedded_schema_version, first_non_transactional,
+    CountTable, DbError,
+};
 use explorer_indexer::Db;
+use sqlx::migrate::{Migration, MigrationType};
+use std::borrow::Cow;
 use std::process::{Command, Output};
 
 /// Runs the compiled `indexer` binary in migrate-only mode against `url` and
@@ -134,8 +145,23 @@ async fn migrate_only_mode_exits_non_zero_on_a_broken_migration() {
         describe(&out)
     );
 
-    // And it must not have left a partial schema behind: sqlx runs each
-    // migration in a transaction, so the failed 0001 rolls back whole.
+    // And no half-applied schema is left behind: `indexer_runs` (created at
+    // line 122 of migration 0001) must not exist.
+    //
+    // Issue #1392 — what this assertion does and does NOT demonstrate. It is
+    // NOT evidence of transactional rollback: the seeded conflict aborts 0001
+    // at its `REFERENCES chains(chain_id)` (line 20), which is *before* the
+    // `indexer_runs` CREATE TABLE this counts, so the table would be absent
+    // whether or not the migration ran in a transaction. What it does prove is
+    // the acceptance criterion it was written for — a failed migrate step exits
+    // non-zero, is reaped, and leaves the later tables uncreated, so nothing
+    // downstream runs against a partly-built schema.
+    //
+    // The atomicity property itself (a migration that fails half-way rolls back
+    // whole) is real but is pinned separately, by
+    // `migration_atomicity_every_embedded_migration_is_transactional` below —
+    // it holds only while no migration opts out with `-- no-transaction`, and
+    // this assertion would not go red if one did.
     let row: (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::BIGINT FROM information_schema.tables \
          WHERE table_schema = 'public' AND table_name = 'indexer_runs'",
@@ -146,6 +172,261 @@ async fn migrate_only_mode_exits_non_zero_on_a_broken_migration() {
     assert_eq!(
         row.0, 0,
         "a failed migration must not leave the later tables half-created"
+    );
+}
+
+// ─── Issue #1392: the boot-time schema-version guard ─────────────────────────
+//
+// Issue #1359 stopped the indexer migrating on boot, which was right — but
+// auto-migration had also been the only thing that made a schema mismatch
+// *fail*. Without a replacement, an indexer started against a stale schema just
+// loops, failing every tick, with no healthcheck to notice. `main` now asserts
+// that the highest embedded migration version equals the highest applied one
+// and refuses to start otherwise. The two tests below drive the compiled binary
+// against a real Postgres so the refusal is demonstrated, not asserted.
+
+/// Runs the compiled `indexer` binary on its NORMAL boot path (no
+/// `--migrate-only`) against `url`, for a single tick, and waits for it to exit.
+///
+/// `--once` bounds the run: on the happy path the poll loop performs one tick
+/// and returns instead of running forever. `--rpc-url` points at a closed port,
+/// so that tick reaches the chain and fails — `run_once` records the RPC error
+/// on the `indexer_runs` row and still returns `Ok`, which is what makes the
+/// happy path both terminating and observable. Everything before the tick (the
+/// schema check under test) runs exactly as it does in production.
+fn run_boot(url: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_indexer"))
+        .arg("--once")
+        // 127.0.0.1:1 is closed: the tick fails fast rather than hanging.
+        .args(["--rpc-url", "http://127.0.0.1:1"])
+        .args(["--gateway", "0x00000000000000000000000000000000000000a1"])
+        .args(["--vault", "0x00000000000000000000000000000000000000a2"])
+        .env("DATABASE_URL", url)
+        .env_remove("INDEXER_RPC_URL")
+        .env_remove("INDEXER_GATEWAY")
+        .env_remove("INDEXER_VAULT")
+        .env_remove("INDEXER_REGISTRY")
+        .env_remove("INDEXER_ROUTER_GOVERNANCE")
+        .env_remove("INDEXER_PORTFOLIO_ROUTER")
+        .env_remove("INDEXER_INVESTMENT_COMMITTEE")
+        .env_remove("INDEXER_CONSENSUS_RECEIPT")
+        .env_remove("INDEXER_END_BLOCK")
+        .output()
+        .expect("failed to spawn the indexer binary")
+}
+
+/// How many rows the binary wrote to `indexer_runs`. A refusal at boot must
+/// leave this at 0: the process must decline *before* it starts indexing.
+async fn indexer_run_count(db: &Db) -> i64 {
+    db.count(CountTable::IndexerRuns)
+        .await
+        .expect("count indexer_runs")
+}
+
+/// Issue #1392 AC — an indexer started against a deliberately stale schema
+/// fails at boot, naming the embedded and the applied version.
+///
+/// The staleness is real, not simulated: the database is migrated in full, then
+/// rolled back to the state it would have been in before the newest migration
+/// ran — the table migration 0015 creates is dropped and its `_sqlx_migrations`
+/// row deleted. That is exactly the shape of a deploy whose migrate step was
+/// skipped while a newer indexer image rolled out.
+#[tokio::test]
+async fn boot_refuses_a_stale_schema_and_names_both_versions() {
+    let Some(pg) = try_raw_pg().await else {
+        return;
+    };
+
+    let out = run_migrate_only(&pg.url);
+    assert!(
+        out.status.success(),
+        "setup: migrate-only must succeed first.\n{}",
+        describe(&out)
+    );
+
+    let db = Db::connect(&pg.url)
+        .await
+        .expect("connect to the migrated database");
+    let embedded = embedded_schema_version();
+
+    // Roll the database back one migration.
+    sqlx::query("DROP TABLE IF EXISTS consensus_receipts CASCADE")
+        .execute(db.pool())
+        .await
+        .expect("drop the table migration 0015 creates");
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+        .bind(embedded)
+        .execute(db.pool())
+        .await
+        .expect("un-record the newest migration");
+
+    let applied = db
+        .applied_schema_version()
+        .await
+        .expect("read the applied schema version")
+        .expect("the database is still migrated, just to an older version");
+    assert_ne!(
+        applied, embedded,
+        "setup: the database must now be behind the binary"
+    );
+
+    let out = run_boot(&pg.url);
+    let report = describe(&out);
+    assert!(
+        !out.status.success(),
+        "boot must FAIL against a stale schema, not loop against it.\n{report}"
+    );
+    assert!(
+        out.status.code().is_some(),
+        "boot must exit with a status code, not hang or die by signal.\n{report}"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("schema version mismatch"),
+        "the refusal must say what is wrong.\n{report}"
+    );
+    assert!(
+        stderr.contains(&embedded.to_string()) && stderr.contains(&applied.to_string()),
+        "the refusal must name BOTH the embedded version ({embedded}) and the \
+         applied version ({applied}) so an operator can act on it.\n{report}"
+    );
+
+    assert_eq!(
+        indexer_run_count(&db).await,
+        0,
+        "a refused boot must not have started indexing.\n{report}"
+    );
+}
+
+/// Issue #1392 AC — the same binary against a MATCHING schema starts normally,
+/// proving the check does not false-positive.
+///
+/// "Starts normally" is proved by work the process could only have done after
+/// the check passed: it logs the agreed version and it opens an `indexer_runs`
+/// row. The tick itself fails (the RPC port is closed) and is recorded on that
+/// row — a tick error is a retryable condition, not a boot refusal, so the
+/// process still exits 0 under `--once`.
+#[tokio::test]
+async fn boot_accepts_a_matching_schema_and_starts_indexing() {
+    let Some(pg) = try_raw_pg().await else {
+        return;
+    };
+
+    let out = run_migrate_only(&pg.url);
+    assert!(
+        out.status.success(),
+        "setup: migrate-only must succeed first.\n{}",
+        describe(&out)
+    );
+
+    let db = Db::connect(&pg.url)
+        .await
+        .expect("connect to the migrated database");
+    assert_eq!(
+        db.applied_schema_version().await.unwrap(),
+        Some(embedded_schema_version()),
+        "setup: a freshly migrated database must match the embedded version"
+    );
+    assert_eq!(
+        indexer_run_count(&db).await,
+        0,
+        "setup: migrate-only must not have started a run"
+    );
+
+    let out = run_boot(&pg.url);
+    let report = describe(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("schema version mismatch"),
+        "a matching schema must NOT be refused — the check false-positived.\n{report}"
+    );
+    assert!(
+        stderr.contains("schema version matches embedded migrations"),
+        "the boot check must log the version it agreed on.\n{report}"
+    );
+    assert!(
+        out.status.success(),
+        "boot against a matching schema must proceed and exit 0 under --once \
+         (the tick's RPC failure is retryable, not fatal).\n{report}"
+    );
+    assert_eq!(
+        indexer_run_count(&db).await,
+        1,
+        "the accepted boot must have gone on to open an indexer_runs row.\n{report}"
+    );
+}
+
+// ─── Issue #1392: pinning migration atomicity ────────────────────────────────
+//
+// `migrate_only_mode_exits_non_zero_on_a_broken_migration` observes that a
+// failed migration leaves no half-created tables, but it cannot enforce the
+// atomicity that makes that true in general: sqlx wraps each migration in a
+// transaction, and a migration can opt out with `-- no-transaction`. If one
+// ever did, that test would stay green while the property was gone.
+//
+// The guard chosen is an assertion over the EMBEDDED `no_tx` flag rather than a
+// grep of the `.sql` files for the literal `-- no-transaction`. The flag is what
+// sqlx actually acts on, so the guard cannot disagree with the migrator: a
+// marker that is mis-spelled, indented, or below the first line would pass a
+// grep while still running inside a transaction, and a future sqlx spelling of
+// the opt-out would defeat a grep entirely.
+
+/// Every migration this binary embeds runs inside a transaction, so a migration
+/// that fails part-way rolls back whole.
+#[test]
+fn migration_atomicity_every_embedded_migration_is_transactional() {
+    assert_migrations_are_transactional().unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// Issue #1392 AC — negative self-test: hand the guard a migration that opted
+/// out of its transaction and it must go red, naming the offender.
+///
+/// Without this, the test above would pass just as happily against a guard that
+/// could never fail — the false-green shape this issue exists to close. The
+/// offending migration is synthetic rather than a committed `.sql` file so the
+/// guard's failure path is exercised on every CI run, not once by hand. (It was
+/// also confirmed against a real `-- no-transaction` file: dropping one into
+/// `migrations/` turns the test above red with
+/// `migration 16 (...) is marked \`-- no-transaction\``.)
+#[test]
+fn migration_atomicity_guard_goes_red_on_a_no_transaction_migration() {
+    // A set shaped like the real one — transactional migrations first, then one
+    // that opted out. The guard must walk past the good ones and find it.
+    let set = vec![
+        Migration::new(
+            1,
+            Cow::Borrowed("synthetic_transactional"),
+            MigrationType::Simple,
+            Cow::Borrowed("CREATE TABLE probe (id BIGINT PRIMARY KEY);"),
+            false,
+        ),
+        Migration::new(
+            9999,
+            Cow::Borrowed("synthetic_no_transaction_probe"),
+            MigrationType::Simple,
+            Cow::Borrowed(
+                "-- no-transaction\nCREATE INDEX CONCURRENTLY probe ON chains (chain_id);",
+            ),
+            true,
+        ),
+    ];
+
+    let flagged = first_non_transactional(&set).expect(
+        "the guard must flag a no_tx migration — if this is None the guard is \
+         vacuous and migration atomicity is unpinned",
+    );
+    assert_eq!(flagged.version, 9999);
+
+    let msg = DbError::NonTransactionalMigration {
+        version: flagged.version,
+        description: flagged.description.to_string(),
+    }
+    .to_string();
+    assert!(msg.contains("9999"), "message must name the version: {msg}");
+    assert!(
+        msg.contains("synthetic_no_transaction_probe"),
+        "message must name the migration: {msg}"
     );
 }
 

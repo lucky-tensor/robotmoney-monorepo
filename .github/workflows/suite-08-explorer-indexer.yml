@@ -88,9 +88,26 @@ jobs:
         working-directory: services/explorer-indexer
         run: cargo test --lib -- abi::tests::abi_drift_gate --nocapture
 
-      - name: Migration idempotency
-        working-directory: services/explorer-indexer
-        run: cargo test --test migrations -- --nocapture
+      # MIGRATIONS + BOOT SCHEMA GUARD (issues #1359, #1392)
+      # tests/migrations.rs covers the schema itself, the `--migrate-only` CLI,
+      # and (issue #1392) the boot-time refusal to run against a schema whose
+      # applied version differs from the one embedded in the binary.
+      #
+      # Routed through cargo_test_require_executed.sh so a run that collects
+      # zero tests fails RED instead of passing as a silent skip — a plain
+      # `cargo test` exits 0 when nothing ran. EXPLORER_INDEXER_REQUIRE_PG turns
+      # a missing Postgres testcontainer into a panic rather than an early
+      # return, which the executed-count guard cannot see on its own (a test
+      # that returns early still reports as passed). `CI` alone already implies
+      # this, but naming it here keeps the requirement explicit and survives a
+      # local `act` run. Loud-skip, never silent-skip.
+      - name: Migrations, migrate-only CLI, and boot schema-version guard
+        env:
+          EXPLORER_INDEXER_REQUIRE_PG: "1"
+        run: |
+          bash .github/scripts/cargo_test_require_executed.sh \
+            -p explorer-indexer \
+            --test migrations -- --test-threads=1 --nocapture
 
       - name: Block ingestion idempotency
         working-directory: services/explorer-indexer

@@ -34,6 +34,33 @@ pub enum DbError {
          ({0:?}, \"<reason>\") to db::REORG_ROLLBACK_EXCLUSIONS."
     )]
     UnscopedBlockTable(String),
+    /// Issue #1392. The boot path deliberately does **not** migrate (#1359), so
+    /// a database whose applied schema version differs from the version this
+    /// binary embeds is refused at boot instead of served. Before this existed,
+    /// an indexer pointed at a stale schema just looped, failing every tick with
+    /// no healthcheck to notice.
+    #[error(
+        "schema version mismatch: this binary embeds explorer migrations up to \
+         version {embedded}, but the database has applied up to version {applied}. \
+         The indexer never migrates on boot (issue #1359), so it refuses to run \
+         against a schema it does not match (issue #1392). Run \
+         `indexer --migrate-only` against this DATABASE_URL to bring the schema to \
+         version {embedded}, or deploy the binary that matches the database."
+    )]
+    SchemaVersionMismatch { embedded: i64, applied: String },
+    /// Issue #1392. An embedded migration opted out of its transaction with
+    /// `-- no-transaction`, so a failure part-way through it would leave a
+    /// half-applied schema behind — the property
+    /// `migrate_only_mode_exits_non_zero_on_a_broken_migration` relies on.
+    #[error(
+        "migration {version} ({description:?}) is marked `-- no-transaction`, so a \
+         failure part-way through it would leave a half-applied schema behind. \
+         The explorer's migrate step relies on every migration being atomic \
+         (issue #1392): split the statement so it can run inside a transaction, \
+         or change this guard deliberately and record what replaces the \
+         atomicity guarantee."
+    )]
+    NonTransactionalMigration { version: i64, description: String },
 }
 
 #[derive(Clone)]
@@ -44,6 +71,50 @@ pub struct Db {
 /// Embed the migrations directory at compile time so `cargo test`
 /// (which does not call sqlx-cli) can still apply schema.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+/// Highest migration version compiled into this binary.
+///
+/// Issue #1392: this is one half of the boot-time schema check — the other half
+/// is [`Db::applied_schema_version`], read from `_sqlx_migrations`.
+pub fn embedded_schema_version() -> i64 {
+    MIGRATOR
+        .iter()
+        .map(|m| m.version)
+        .max()
+        .expect("the embedded migrations directory is never empty")
+}
+
+/// The first migration in `migrations` that opted out of running inside a
+/// transaction (`-- no-transaction` on its first line), if any.
+///
+/// Issue #1392: `migrate_only_mode_exits_non_zero_on_a_broken_migration` asserts
+/// that a failed migration leaves no half-created tables behind. That holds only
+/// because sqlx wraps each migration in a transaction, which a migration can opt
+/// out of. Taking a slice (rather than reading [`MIGRATOR`] directly) is what
+/// makes the guard itself testable: `tests/migrations.rs` hands it a synthetic
+/// `no_tx` migration and proves the guard goes red, without committing one.
+pub fn first_non_transactional(
+    migrations: &[sqlx::migrate::Migration],
+) -> Option<&sqlx::migrate::Migration> {
+    migrations.iter().find(|m| m.no_tx)
+}
+
+/// Fail if any embedded migration opted out of its transaction (issue #1392).
+///
+/// This is the atomicity guard chosen over grepping the `.sql` files for the
+/// literal `-- no-transaction`: the embedded `no_tx` flag is what sqlx actually
+/// acts on at runtime, so the guard cannot disagree with the migrator (a file
+/// whose marker is mis-spelled, indented, or on the wrong line would pass a grep
+/// while still running inside a transaction, and vice versa).
+pub fn assert_migrations_are_transactional() -> Result<(), DbError> {
+    match first_non_transactional(&MIGRATOR.migrations) {
+        Some(m) => Err(DbError::NonTransactionalMigration {
+            version: m.version,
+            description: m.description.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
 
 /// All countable tables (nine §11 tables plus the vault registry table
 /// added in migration 0002, and the governance tables added in migration 0003).
@@ -358,6 +429,53 @@ impl Db {
     pub async fn migrate(&self) -> Result<(), DbError> {
         MIGRATOR.run(&self.pool).await?;
         Ok(())
+    }
+
+    /// Highest version recorded in `_sqlx_migrations`, or `None` when nothing
+    /// has ever been migrated here (the table does not exist, or is empty).
+    ///
+    /// The existence probe is a separate statement because Postgres parses the
+    /// whole query up front: `SELECT MAX(version) FROM _sqlx_migrations` against
+    /// a virgin database is a 42P01 parse error, not a NULL.
+    pub async fn applied_schema_version(&self) -> Result<Option<i64>, DbError> {
+        let table: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+                .fetch_one(&self.pool)
+                .await?;
+        if table.is_none() {
+            return Ok(None);
+        }
+        let applied: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(applied)
+    }
+
+    /// Refuse to proceed unless the database's applied schema version equals the
+    /// version embedded in this binary. Returns the agreed version on success.
+    ///
+    /// Issue #1392. Issue #1359 correctly stopped the indexer migrating on boot,
+    /// but auto-migration had been the only thing that made a schema mismatch
+    /// *fail*: without it, an indexer started against a stale schema loops
+    /// silently, and no healthcheck notices. This restores the loud failure
+    /// without restoring auto-migration — the indexer still never writes schema,
+    /// it just declines to run against one it does not match. The error names
+    /// both versions ([`DbError::SchemaVersionMismatch`]).
+    pub async fn assert_schema_matches_embedded(&self) -> Result<i64, DbError> {
+        let embedded = embedded_schema_version();
+        let applied = self.applied_schema_version().await?;
+        match applied {
+            Some(v) if v == embedded => Ok(embedded),
+            other => Err(DbError::SchemaVersionMismatch {
+                embedded,
+                applied: match other {
+                    Some(v) => v.to_string(),
+                    None => "none (_sqlx_migrations is absent or empty — the database \
+                         has never been migrated)"
+                        .to_string(),
+                },
+            }),
+        }
     }
 
     /// Idempotent insert for the `chains` row.
