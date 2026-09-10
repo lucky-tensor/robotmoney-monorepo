@@ -26,26 +26,65 @@
 
 name: watchdog-rate-monitor
 
+# CI taxonomy (issue #1105, declared for this suite in issue #1384): this is a
+# mixed workflow, so CI_CLASS is declared per job rather than at workflow level.
+#
+#   fast / watchdog-unit        -> feature-correctness
+#     `cargo clippy -p watchdog --all-targets` + `cargo test -p watchdog --lib`.
+#     Scoped unit tests, no Docker, no external resource. feature-correctness
+#     runs on draft PRs, so this job's existing triggers already match its
+#     class and needed no change.
+#
+#   pg   / watchdog-integration -> system-correctness
+#     Every step boots a Postgres testcontainer and drives the breach-detection
+#     pipeline end to end (volume queries -> breach detection -> alert dispatch,
+#     plus cursor staleness / deposit-volume anomaly). Docker + a real database +
+#     cross-component assertions is the definition of system-correctness; calling
+#     it feature-correctness to keep it on drafts would be a dishonest label.
+#
+# THE DRAFT-COVERAGE DECISION (issue #1384)
+# Before this file was declared, BOTH jobs ran on every pull request including
+# drafts. system-correctness is `pr_draft: skip` in the taxonomy matrix, so
+# declaring the pg job honestly forced a choice: keep draft-stage integration
+# coverage and carry a permanent taxonomy violation, or defer the pg job to
+# ready_for_review.
+#
+# DECIDED: defer. watchdog-integration no longer runs on draft PRs.
+#   - The taxonomy has no exception mechanism: `must-not-run-pr_draft` is an
+#     error, not a warning, so "deliberate exception" is not something this repo
+#     can express — it would leave `ci lint` permanently red for this file and
+#     re-open the same question on every future edit.
+#   - What is actually lost is narrow: the ~1m24s pg job no longer reports while
+#     a PR is a draft. The unit battery still runs on every draft push, and the
+#     pg job runs in full at ready_for_review (which is why `ready_for_review`
+#     is in the pull_request types below), on every subsequent push to the ready
+#     PR, and on push to dev/dev-phase-* for merged-commit coverage. No commit
+#     reaches dev without the mint/burn watchdog integration suite having run on
+#     it, so the security-model.md §9 control is still proven before merge — it
+#     is proven later in the PR's life, not less often.
+#   - Cheapness is an argument for running it, but it is not an argument for
+#     mislabelling it. If draft-stage integration feedback is later judged worth
+#     the class violation, the honest fix is to change the taxonomy matrix in
+#     agent-core, not to relabel this job.
+
 on:
   # feature-correctness and system-correctness: run on pushes to dev/dev-phase-*
   # and code-bearing pull requests to any branch. ready_for_review is included
   # so the system-correctness integration job starts when a draft is promoted.
+  # paths-ignore bypasses docs-only changes — neither job validates prose.
   push:
     branches: [dev, "dev-phase-*"]
     paths-ignore: ['**.md', '**.txt']
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ['**.md', '**.txt']
+  # `ci lint` warns `sweep-missing-nightly` on both jobs because it sees no
+  # `schedule:` here. Nightly coverage is real but indirect: suite-21-nightly.yml
+  # lists suite-20-watchdog.yml in its dispatch set and POSTs a workflow_dispatch
+  # at 02:00 UTC against dev HEAD. The warning is a linter blind spot for the
+  # dispatcher pattern this repo uses for every suite; do not add a `schedule:`
+  # here, or the nightly sweep runs this suite twice.
   workflow_dispatch:
-
-# CI taxonomy: watchdog-unit is feature-correctness and runs on draft PRs;
-# watchdog-integration is system-correctness and waits until the PR is ready
-# for review. The integration job is intentionally not draft-stage coverage:
-# its Postgres-backed breach-detection pipeline is deferred to the review gate
-# so its system-correctness classification matches the CI taxonomy. This loses
-# integration feedback while a PR is a draft, while preserving the unit battery
-# and all ready-for-review and merged-commit coverage. Both jobs skip docs-only
-# changes because neither job validates documentation.
 
 # CI velocity tiers (issue #600): cancel superseded PR runs so a re-push does
 # not pile up duplicate suites. push:main/dev runs are exempt — they keep a
