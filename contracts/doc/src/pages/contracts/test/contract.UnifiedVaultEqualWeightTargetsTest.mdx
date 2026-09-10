@@ -1,0 +1,498 @@
+---
+title: "UnifiedVaultEqualWeightTargetsTest"
+---
+
+# UnifiedVaultEqualWeightTargetsTest
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/82c1c2dc7d20af53bfb9d50a2efd80ad0cb8a34a/contracts/test/UnifiedVaultEqualWeightTargets.t.sol)
+
+**Inherits:** Test
+
+## Constants
+
+### ONE_USDC
+
+```solidity
+uint256 internal constant ONE_USDC = 1e6;
+```
+
+### MAX_BPS
+
+```solidity
+uint256 internal constant MAX_BPS = 10_000;
+```
+
+### N
+
+```solidity
+uint256 internal constant N = 3;
+```
+
+### PROBE_SLOT
+
+<i>
+
+`ProbeHoldAdapter.probe` — slot 0.
+
+</i>
+
+```solidity
+bytes32 internal constant PROBE_SLOT = bytes32(uint256(0));
+```
+
+### READS_PER_ADAPTER_ONE_ROUND
+
+<i>
+
+Reads per adapter a CORRECT `_routeDeposit` makes: one for the
+`totalAssets()` NAV snapshot at the top of the function, one in
+pass 1. A third read means the leftover-spread pass ran and re-read
+the adapter.
+
+</i>
+
+```solidity
+uint256 internal constant READS_PER_ADAPTER_ONE_ROUND = 2;
+```
+
+## State Variables
+
+### CAPS
+
+<i>
+
+Registered cap set. Deliberately NON-BINDING for a three-way equal
+split (5000 bps each vs a ~3333 bps target), so these tests isolate
+the TARGET-SET defect this issue is about. A cap set that sums to
+exactly `MAX_BPS` floors a couple of wei BELOW NAV and makes those
+wei unplaceable whatever the targets say — that interaction has its
+own test below, on `DEVNET_CAPS`.
+
+</i>
+
+```solidity
+uint16[3] internal CAPS = [uint16(5000), uint16(5000), uint16(5000)];
+```
+
+### DEVNET_CAPS
+
+<i>
+
+The devnet / `Deploy.s.sol` cap set: 3334 / 3333 / 3333, summing to
+exactly `MAX_BPS`. Reproduced verbatim.
+
+</i>
+
+```solidity
+uint16[3] internal DEVNET_CAPS = [uint16(3334), uint16(3333), uint16(3333)];
+```
+
+### usdc
+
+```solidity
+TestERC20 internal usdc;
+```
+
+### vault
+
+```solidity
+EqualWeightHarness internal vault;
+```
+
+### adapters
+
+```solidity
+ProbeHoldAdapter[3] internal adapters;
+```
+
+### admin
+
+```solidity
+address internal admin = makeAddr("admin");
+```
+
+### emergency
+
+```solidity
+address internal emergency = makeAddr("emergency");
+```
+
+### feeRecipient
+
+```solidity
+address internal feeRecipient = makeAddr("feeRecipient");
+```
+
+### alice
+
+```solidity
+address internal alice = makeAddr("alice");
+```
+
+## Functions
+
+<a id="setup"></a>
+
+### setUp
+
+```solidity
+function setUp() public;
+```
+
+<a id="_reads-address"></a>
+
+### _reads
+
+<i>
+
+Number of `totalAssets()` calls the recorded window made against
+`adapter_`, counted as `SLOAD`s of its dedicated probe slot.
+
+</i>
+
+```solidity
+function _reads(address adapter_) internal view returns (uint256 n);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| adapter_ | `address` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| n | `uint256` |  |
+
+<a id="_adapterbalances"></a>
+
+### _adapterBalances
+
+```solidity
+function _adapterBalances() internal view returns (uint256[3] memory bals);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| bals | `uint256[3]` |  |
+
+<a id="_setcaps-uint16-3"></a>
+
+### _setCaps
+
+```solidity
+function _setCaps(uint16[3] memory caps) internal;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| caps | `uint16[3]` |  |
+
+<a id="_seedcomposition-uint256-3"></a>
+
+### _seedComposition
+
+<i>
+
+Place `bals` into the adapters by direct transfer and mint shares
+against them, so the composition does not depend on how routing
+happens to split a deposit. Leaves ZERO idle USDC in the vault.
+
+</i>
+
+```solidity
+function _seedComposition(uint256[3] memory bals) internal;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| bals | `uint256[3]` |  |
+
+<a id="_expectedtargets-uint256"></a>
+
+### _expectedTargets
+
+<i>
+
+The equal-weight target set the fix defines: base `MAX_BPS / active`
+bps with the `MAX_BPS % active` remainder handed one each to the
+lowest ranks, and each balance taken as the DIFFERENCE OF TWO PREFIX
+SHARES of `total`. Re-derived here independently of the contract.
+
+</i>
+
+```solidity
+function _expectedTargets(uint256 total) internal pure returns (uint256[3] memory t);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| total | `uint256` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| t | `uint256[3]` |  |
+
+<a id="test_getadapterdrift_targetspartitionnavexactly"></a>
+
+### test_getAdapterDrift_targetsPartitionNavExactly
+
+`getAdapterDrift`'s `targetBalances` MUST sum to the whole NAV.
+
+<i>
+
+RED before #1396: `_targetBpsFor()` returned `10000 / 3 == 3333`, so
+every target was `total * 3333 / 10000` and the three summed to 9999
+bps of NAV — a permanent phantom over-target drift of ~1 bps that no
+rebalance could ever clear.
+
+</i>
+
+```solidity
+function test_getAdapterDrift_targetsPartitionNavExactly() public;
+```
+
+<a id="test_getadapterinfo_targetbpssumtomaxbps"></a>
+
+### test_getAdapterInfo_targetBpsSumToMaxBps
+
+`getAdapterInfo`'s per-adapter `targetBps` MUST sum to `MAX_BPS`.
+
+<i>
+
+RED before #1396: three adapters each reported 3333, summing to 9999.
+
+</i>
+
+```solidity
+function test_getAdapterInfo_targetBpsSumToMaxBps() public view;
+```
+
+<a id="test_getadapterinfo_remainderbpsgotolowestranks"></a>
+
+### test_getAdapterInfo_remainderBpsGoToLowestRanks
+
+The remainder bps go to the LOWEST ranks, one each — the exact
+convention #1391 established for `RobotMoneyVault`.
+
+```solidity
+function test_getAdapterInfo_remainderBpsGoToLowestRanks() public view;
+```
+
+<a id="test_getadapterinfo_inactiveadapterhaszerotarget"></a>
+
+### test_getAdapterInfo_inactiveAdapterHasZeroTarget
+
+An inactive adapter has no target at all, and the survivors still
+split `MAX_BPS` exactly between them.
+
+```solidity
+function test_getAdapterInfo_inactiveAdapterHasZeroTarget() public;
+```
+
+<a id="test_forcerebalance_attargetcomposition_isanoop"></a>
+
+### test_forceRebalance_atTargetComposition_isANoOp
+
+A vault sitting EXACTLY on the equal-weight target set must be a
+structural no-op for `forceRebalance`: nothing is drawn to idle,
+nothing is re-routed, and no adapter balance moves.
+
+<i>
+
+THE BOUNDARY TEST. NAV is 30.000000 USDC, whose floored 3333-bps
+target was 9 999 000 per adapter against an exact-partition target
+set of 10 002 000 / 9 999 000 / 9 999 000. RED before #1396: adapter
+0 read as 3 000 wei ABOVE the floored target, `_drawSurplusToIdle`
+pulled those 3 000 wei out, `_fillDeficitFirst` found no deficit
+against the same floored targets and handed them straight back —
+`Rebalanced(3000)`, two adapter round trips, zero net effect.
+GREEN after: `Rebalanced(0)`.
+
+</i>
+
+```solidity
+function test_forceRebalance_atTargetComposition_isANoOp() public;
+```
+
+<a id="test_forcerebalance_drifted_landsexactlyonthetargetset"></a>
+
+### test_forceRebalance_drifted_landsExactlyOnTheTargetSet
+
+A genuinely drifted vault still rebalances — and lands EXACTLY on
+the published target set, after which a repeat call is the no-op
+the first one made possible.
+
+<i>
+
+RED before #1396 on the SECOND `forceRebalance`: the floored targets
+left ~1 bps of NAV above every adapter's target, so every subsequent
+call kept drawing it to idle and handing it straight back.
+
+</i>
+
+```solidity
+function test_forceRebalance_drifted_landsExactlyOnTheTargetSet() public;
+```
+
+<a id="test_routedeposit_remainderisplacedbypassone"></a>
+
+### test_routeDeposit_remainderIsPlacedByPassOne
+
+A deposit whose size is NOT a multiple of the adapter count must
+be split so the slices sum to it EXACTLY — the `amount % n`
+remainder lands in pass 1, not in the leftover-spread pass.
+
+<i>
+
+RED before #1396: `equalShare = amount / n` floored to 1 000 000 000
+each, placing 3 000 000 000 of 3 000 000 002; the 2 leftover wei fell
+through to `_spreadCapHeadroom`, which walked the adapters again and
+dumped BOTH on adapter 0 (the first with headroom) — balances
+1000000002 / 1000000000 / 1000000000 instead of the exact split.
+
+</i>
+
+```solidity
+function test_routeDeposit_remainderIsPlacedByPassOne() public;
+```
+
+<a id="test_routedeposit_remainderdoesnotforceasecondroundofreads"></a>
+
+### test_routeDeposit_remainderDoesNotForceASecondRoundOfReads
+
+...and placing that remainder must NOT cost a second full round of
+adapter `totalAssets()` reads.
+
+<i>
+
+THE READ-COUNT BOUNDARY. RED before #1396: the 2 unplaced wei kept
+`remaining > 0`, so the leftover-spread pass re-read every adapter —
+3 reads each, not 2. The reads are counted as `SLOAD`s of each
+adapter's dedicated probe slot, since `totalAssets()` is `view` and
+cannot count itself.
+
+</i>
+
+```solidity
+function test_routeDeposit_remainderDoesNotForceASecondRoundOfReads() public;
+```
+
+<a id="test_routedeposit_dustbelowadaptercount_isspreadbypassone"></a>
+
+### test_routeDeposit_dustBelowAdapterCount_isSpreadByPassOne
+
+A dust deposit SMALLER than the adapter count is still placed by
+pass 1, one wei to each of the trailing ranks (`floor` puts the
+remainder of a prefix split at the END, the mirror image of the
+bps remainder going to the lowest ranks).
+
+<i>
+
+RED before #1396: `equalShare = amount / n == 0` skipped pass 1
+entirely and the whole deposit went through the leftover-spread pass,
+which dumped it on adapter 0 — balances 1 / 1 / 0.
+
+</i>
+
+```solidity
+function test_routeDeposit_dustBelowAdapterCount_isSpreadByPassOne() public;
+```
+
+<a id="test_routedeposit_capflooredweistayidlewithoutasecondround"></a>
+
+### test_routeDeposit_capFlooredWeiStayIdleWithoutASecondRound
+
+REGRESSION GUARD (not a pre-#1396 red): when the cap set sums to
+exactly `MAX_BPS`, the per-adapter `capBps` balances FLOOR to a
+couple of wei below NAV, so those wei are unplaceable by
+construction. Pass 1 observes zero cap headroom and pass 2 is
+skipped rather than re-reading every adapter to rediscover it —
+the deliberate trade #1391 pinned, ported here with the targets.
+The wei stay idle, are still counted by `totalAssets`, and are
+reported by `UnroutedDeposit`.
+
+```solidity
+function test_routeDeposit_capFlooredWeiStayIdleWithoutASecondRound() public;
+```
+
+<a id="testfuzz_noadapterexceedscapbps-uint96-uint16-uint16-uint16"></a>
+
+### testFuzz_noAdapterExceedsCapBps
+
+FUZZ (as #1391 did): across arbitrary deposit sizes and cap sets,
+no adapter is ever filled past its `capBps` share of NAV, and the
+published target set always partitions NAV exactly.
+
+```solidity
+function testFuzz_noAdapterExceedsCapBps(uint96 depositRaw, uint16 c0, uint16 c1, uint16 c2)
+        public;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| depositRaw | `uint96` |  |
+| c0 | `uint16` |  |
+| c1 | `uint16` |  |
+| c2 | `uint16` |  |
+
+<a id="testfuzz_forcerebalancerespectscapbps-uint96-uint96-uint96"></a>
+
+### testFuzz_forceRebalanceRespectsCapBps
+
+FUZZ: `forceRebalance` never lifts an adapter past its `capBps`
+share either, never decreases NAV, and always lands the
+composition on the published (exactly-partitioning) target set.
+
+```solidity
+function testFuzz_forceRebalanceRespectsCapBps(uint96 a0, uint96 a1, uint96 a2) public;
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| a0 | `uint96` |  |
+| a1 | `uint96` |  |
+| a2 | `uint96` |  |
+
+## Events
+
+### Rebalanced
+
+```solidity
+event Rebalanced(uint256 totalMoved);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| totalMoved | `uint256` |  |
+
+### UnroutedDeposit
+
+```solidity
+event UnroutedDeposit(uint256 amount);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| amount | `uint256` |  |
+
