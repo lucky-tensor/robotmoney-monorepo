@@ -57,12 +57,53 @@ the user signs.
 
 ### 3. Pinned on-chain invariants
 
-- `VITE_GATEWAY_EXPECTED_CODE_HASH`, gateway/vault addresses, and
-  `chainId` are baked into the bundle at build time.
+- `VITE_GATEWAY_EXPECTED_CODE_HASH` is baked into the bundle at build
+  time, and **only** there. It is excluded from `RUNTIME_CONFIG_KEYS`
+  in `clients/dapp/src/lib/runtimeConfig.ts`, so a `/config.json` that
+  carries the key has it dropped with a warning rather than merged.
+- Gateway/vault addresses, `VITE_ENV_CLASS`, and the RPC/explorer
+  endpoints are **not** build-time-only. Issue #1356 moved them into
+  the `/config.json` document the dapp fetches at startup, so one
+  commit-addressed image can serve several environments. The build-time
+  env remains the base layer, so a deployment that serves no such
+  document behaves exactly as it did before.
+- The split is the point: an address the dapp merely talks to may be
+  supplied at runtime, because the pin is what decides whether talking
+  to it is safe. The pin itself may not, because a value fetched from a
+  separately-mutable document sits outside whatever attests the bundle.
 - The dapp refuses admin writes unless `keccak256(getBytecode(gateway))`
   matches the pinned hash. Even if the user's RPC lies about
-  `eth_getCode`, the mismatch fails closed.
-- The dapp trusts the **bundle**, not the **node**.
+  `eth_getCode`, the mismatch fails closed — and so does a missing pin,
+  so an image built without one enables no admin writes at all.
+- The dapp trusts the **bundle**, not the **node**, for the pin. A
+  gateway address supplied at runtime still has to present bytecode
+  hashing to the pinned value before any admin write is enabled.
+
+#### Decision — the code-hash pin is build-time-only (issue #1375)
+
+Recorded here because #1356 briefly made the pin runtime-configurable
+along with the deployment-shaped keys, which made the first bullet above
+false for a while.
+
+- **Decision.** `VITE_GATEWAY_EXPECTED_CODE_HASH` is removed from
+  `RUNTIME_CONFIG_KEYS` and joins `VITE_FAUCET_HARNESS_PRIVATE_KEY` and
+  `VITE_HISTORY_PANE` as a documented load-bearing exclusion.
+- **Why.** `docs/architecture.md` §10 makes release provenance a
+  prerequisite for public mainnet use. Once the bundle is attested, a
+  pin fetched at runtime would be the one value the attestation did not
+  cover — a verified artifact taking its trust anchor from an unverified
+  document served by the same origin. Nothing is weakened *today* (the
+  dapp image carries no attestation yet, and `/config.json` is served by
+  the dapp's own origin rather than by the node the threat model
+  distrusts), so this is pre-emptive rather than a fix for a live hole.
+- **Cost, stated plainly.** The gateway's `usdcToken`, `vaultContract`
+  and `routerContract` are `immutable`, so they live in its runtime
+  bytecode and the hash is deployment-specific. There is therefore no
+  correct hash for an environment-agnostic image to pin: a bundle that
+  is to enable admin writes must be built for its deployment. The
+  generic image published by `.github/workflows/release-dapp.yml` builds
+  with an empty pin and stays admin-read-only — which is the fail-closed
+  outcome, not a regression to fix by re-opening the runtime path.
 
 ### 4. Indexer / explorer is untrusted UI
 

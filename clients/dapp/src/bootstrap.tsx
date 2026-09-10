@@ -28,10 +28,17 @@
  *
  * The merged config keeps the build-time env as its base layer, so
  * `VITE_FAUCET_HARNESS_PRIVATE_KEY` (faucetClient.ts),
- * `VITE_HISTORY_PANE` (featureFlags.ts), `VITE_FORCE_ONBOARDING`, and the
+ * `VITE_HISTORY_PANE` (featureFlags.ts),
+ * `VITE_GATEWAY_EXPECTED_CODE_HASH` (gatewayVerifier.ts, via
+ * `deriveDappConfig`'s `expectedCodeHash`), `VITE_FORCE_ONBOARDING`, and the
  * fork-block annotations still reach their consumers exactly as before —
  * inlined at build time, and unreachable from `/config.json` because
  * `RUNTIME_CONFIG_KEYS` does not list them.
+ *
+ * The code-hash pin is the load-bearing one: it is the value that decides
+ * whether admin writes against the *runtime-supplied* gateway address are
+ * enabled, so it has to sit inside whatever attests the bundle rather than
+ * beside it. See the security note in `runtimeConfig.ts` (issue #1375).
  *
  * ## Other notes carried over from main.tsx
  *
