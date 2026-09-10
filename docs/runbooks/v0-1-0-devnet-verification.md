@@ -153,10 +153,29 @@ flow constructs for you.
 
 ## 4.5 — Fix loop
 
-Any failure above: fix on `dev`, `git checkout` the fixed commit in this
-worktree, and restart from §4.1. There is nothing to clean up first — the
-next `cargo run -p smoke-test -- --full-stack` tears down and rebuilds the
-compose stacks itself.
+**Explorer-api or explorer-indexer only (step 4 failed, steps 1–3 passed).**
+Since issue #1354 these two ship as separate images, so rebuild and recreate
+just the one you fixed. Do **not** rebuild the chain: it, the deployed
+contracts, and the indexed Postgres data all stay up.
+
+```bash
+cd testing/ethereum-testnet/config
+docker compose -f docker-compose.dapp.yaml up -d --build explorer-api
+```
+
+Export the same values the bring-up used first — contract addresses from
+`deployments/devnet.json`, and `EXPLORER_API_PORT` / `DAPP_PORT` /
+`POSTGRES_PORT` matching the URLs the harness printed in §4.1 — because
+compose re-evaluates the file's required substitutions on every invocation.
+Re-run step 4 once the container reports healthy. Full command set and the
+`restart` caveat: [`docs/development/environments.md` §3 — Per-service restart
+and rebuild](../development/environments.md#per-service-restart-and-rebuild).
+
+**Any other failure** (chain, deploy ceremony, contracts, dapp bundle): fix on
+`dev`, `git checkout` the fixed commit in this worktree, and restart from
+§4.1. There is nothing to clean up first — the next
+`cargo run -p smoke-test -- --full-stack` tears down and rebuilds the compose
+stacks itself.
 
 ## 4.6 — Teardown (not a rollback — routine)
 

@@ -203,6 +203,15 @@ services:
       # container was created, not that its in-process `db.migrate()` had
       # returned. `service_completed_successfully` on the dedicated migrator is
       # a real barrier.
+      #
+      # Issue #1370: a real barrier, but only for `docker compose up`.
+      # `depends_on` conditions are evaluated when compose creates or starts a
+      # container as part of an `up`; `docker compose restart explorer-api` —
+      # the per-service restart that issue #1354's image split exists to
+      # enable — restarts the existing container in place and re-checks
+      # nothing here. On that path the schema guard is the /health probe
+      # below, NOT this edge. See docs/development/environments.md §3
+      # "Per-service restart and rebuild".
       explorer-migrate:
         condition: service_completed_successfully
     environment:
@@ -213,6 +222,15 @@ services:
     ports:
       - "127.0.0.1:${EXPLORER_API_PORT:-8080}:8080"
     healthcheck:
+      # Issue #1370: this is NOT a bare liveness ping and must not be
+      # simplified into one. `/health` SELECTs from `indexer_runs`
+      # (clients/explorer-api/src/routes.rs), so it cannot report healthy while
+      # the explorer schema is missing. That makes it the schema guarantee on
+      # every path where the `explorer-migrate` barrier above does not apply —
+      # notably `docker compose restart explorer-api`, which re-evaluates no
+      # `depends_on` condition. Removing or weakening this probe removes that
+      # guarantee, and also un-gates `dapp`, which starts on
+      # `explorer-api: service_healthy`.
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       # 2s cadence so dapp (depends_on explorer-api: service_healthy) starts
       # promptly once the API answers /health.
