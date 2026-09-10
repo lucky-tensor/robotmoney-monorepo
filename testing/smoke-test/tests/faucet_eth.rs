@@ -227,9 +227,25 @@ fn a_drip_the_faucet_cannot_afford_fails_loudly_and_distinguishably() {
         err.contains("fund_eth_from_harness"),
         "the failure must name the funding call it came from: {err}"
     );
+    // The node's own reason must survive into the harness error. Geth phrases a
+    // shortfall as `insufficient funds for transfer` when the value alone
+    // exceeds the balance and `insufficient funds for gas * price + value` when
+    // the gas tips it over, and cast may wrap either with an `overshot` /
+    // `exceeds balance` detail line. Accept any of those rather than over-fitting
+    // one build's exact wording — what this asserts is that a shortfall reason
+    // reached the caller at all, not which sentence the node chose.
+    let lower = err.to_lowercase();
     assert!(
-        err.to_lowercase().contains("insufficient funds"),
-        "the node's own reason must survive to the harness error: {err}"
+        lower.contains("insufficient funds")
+            || lower.contains("exceeds balance")
+            || lower.contains("overshot"),
+        "the node's own shortfall reason must survive to the harness error: {err}"
+    );
+    // Whatever the wording, the raw send output must be carried through rather
+    // than swallowed — that is what makes the failure diagnosable.
+    assert!(
+        err.contains("stderr="),
+        "the raw cast stderr must be carried into the harness error: {err}"
     );
     assert!(
         !err.contains("replacement transaction underpriced"),
