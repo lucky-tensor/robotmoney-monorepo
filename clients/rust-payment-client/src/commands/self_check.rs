@@ -426,7 +426,7 @@ pub fn run(config_path: &Path, pretty: bool) -> i32 {
                 false,
                 checks,
                 cfg.chain_id,
-                Some(error_name(&err).to_string()),
+                Some(err.name().to_string()),
             )
         }
     };
@@ -473,44 +473,6 @@ pub fn run(config_path: &Path, pretty: bool) -> i32 {
         EXIT_OK
     } else {
         EXIT_PREFLIGHT_FAIL
-    }
-}
-
-/// Map an [`RmpcError`] to its variant name (the stable operator-visible
-/// string). Unknown variants fall back to the `Display` prefix.
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrAgentNotAuthorized => "ErrAgentNotAuthorized",
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrCodeHashMismatch => "ErrCodeHashMismatch",
-        RmpcError::ErrChainIdMismatch => "ErrChainIdMismatch",
-        RmpcError::ErrGatewayPaused => "ErrGatewayPaused",
-        RmpcError::ErrAllowanceInsufficient => "ErrAllowanceInsufficient",
-        RmpcError::ErrBalanceInsufficient => "ErrBalanceInsufficient",
-        RmpcError::ErrVaultDisabled => "ErrVaultDisabled",
-        RmpcError::ErrPolicyExpired => "ErrPolicyExpired",
-        RmpcError::ErrLegUnavailable => "ErrLegUnavailable",
-        RmpcError::ErrSlippageBoundExceeded => "ErrSlippageBoundExceeded",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrAgentDepositLogMissing { .. } => "ErrAgentDepositLogMissing",
-        RmpcError::ErrOrderIdAlreadySubmitted { .. } => "ErrOrderIdAlreadySubmitted",
-        RmpcError::ErrVaultPaused => "ErrVaultPaused",
-        RmpcError::ErrWithdrawCapExceeded => "ErrWithdrawCapExceeded",
-        RmpcError::ErrShareBalanceInsufficient => "ErrShareBalanceInsufficient",
-        RmpcError::ErrShareAllowanceInsufficient => "ErrShareAllowanceInsufficient",
-        RmpcError::ErrAgentWithdrawLogMissing { .. } => "ErrAgentWithdrawLogMissing",
-        RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
-        RmpcError::ErrNotAllowlisted => "ErrNotAllowlisted",
-        RmpcError::ErrIcContractNotConfigured => "ErrIcContractNotConfigured",
     }
 }
 
@@ -692,32 +654,5 @@ mod tests {
         )
         .await;
         assert_eq!(got, Some(U256::from(7u64)));
-    }
-
-    #[test]
-    fn error_name_covers_every_preflight_refusal() {
-        // Every preflight-emitted variant must be in the match arm so the
-        // self-check JSON always reports a stable name.
-        assert_eq!(
-            error_name(&RmpcError::ErrChainIdMismatch),
-            "ErrChainIdMismatch"
-        );
-        assert_eq!(
-            error_name(&RmpcError::ErrCodeHashMismatch),
-            "ErrCodeHashMismatch"
-        );
-        assert_eq!(error_name(&RmpcError::ErrGatewayPaused), "ErrGatewayPaused");
-        assert_eq!(
-            error_name(&RmpcError::ErrAgentNotAuthorized),
-            "ErrAgentNotAuthorized"
-        );
-        assert_eq!(
-            error_name(&RmpcError::ErrAllowanceInsufficient),
-            "ErrAllowanceInsufficient"
-        );
-        assert_eq!(
-            error_name(&RmpcError::ErrBalanceInsufficient),
-            "ErrBalanceInsufficient"
-        );
     }
 }

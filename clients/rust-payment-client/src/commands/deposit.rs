@@ -188,7 +188,7 @@ pub fn run(args: Args) -> i32 {
         emit_refusal(
             &DepositFailure {
                 status: "refused",
-                error: error_name(&err).to_string(),
+                error: err.name().to_string(),
                 message: Some(format!("{err}")),
                 agent: None,
                 order_id: Some(format!("{order_id:#x}")),
@@ -430,12 +430,12 @@ pub fn run(args: Args) -> i32 {
     let report = match preflight_result {
         Ok(r) => r,
         Err(err) => {
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&err).to_string())));
+            record_audit(&audit.build(AuditDecision::Refused, Some(err.name().to_string())));
             let checks = ChecksOutput::from_err_partial(&err);
             emit_refusal(
                 &DepositFailure {
                     status: "refused",
-                    error: error_name(&err).to_string(),
+                    error: err.name().to_string(),
                     message: Some(format!("{err}")),
                     agent: Some(format!("{agent_address:#x}")),
                     order_id: Some(format!("{order_id:#x}")),
@@ -460,12 +460,12 @@ pub fn run(args: Args) -> i32 {
             Ok(b) => b,
             Err(e) => {
                 record_audit(
-                    &audit.build(AuditDecision::Refused, Some(error_name(&e).to_string())),
+                    &audit.build(AuditDecision::Refused, Some(e.name().to_string())),
                 );
                 emit_refusal(
                     &DepositFailure {
                         status: "refused",
-                        error: error_name(&e).to_string(),
+                        error: e.name().to_string(),
                         message: Some(format!("{e}")),
                         agent: Some(format!("{agent_address:#x}")),
                         order_id: Some(format!("{order_id:#x}")),
@@ -574,12 +574,12 @@ pub fn run(args: Args) -> i32 {
             // revert simulated by the node ahead of inclusion.
             record_audit(&audit.build(
                 AuditDecision::BroadcastFailed,
-                Some(error_name(&e).to_string()),
+                Some(e.name().to_string()),
             ));
             emit_refusal(
                 &DepositFailure {
                     status: "refused",
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                     agent: Some(format!("{agent_address:#x}")),
                     order_id: Some(format!("{order_id:#x}")),
@@ -630,11 +630,11 @@ pub fn run(args: Args) -> i32 {
             // stays in place; if the operator retries they get
             // ErrOrderIdAlreadySubmitted pointing at the original tx_hash,
             // which they should inspect before re-submitting.
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&e).to_string())));
+            record_audit(&audit.build(AuditDecision::Refused, Some(e.name().to_string())));
             emit_refusal(
                 &DepositFailure {
                     status: "refused",
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                     agent: Some(format!("{agent_address:#x}")),
                     order_id: Some(format!("{order_id:#x}")),
@@ -774,48 +774,6 @@ fn finalize_replay_on_failure(
     }
 }
 
-/// Map an [`RmpcError`] to its variant name (the stable operator-visible
-/// string). Mirrors the table in `commands::self_check`; kept duplicated
-/// rather than re-exported because the two commands have different
-/// failure modes (deposit can hit `ErrTxReverted`,
-/// `ErrAgentDepositLogMissing`, etc.) and the lists should not silently
-/// drift through a shared helper.
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrAgentNotAuthorized => "ErrAgentNotAuthorized",
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrCodeHashMismatch => "ErrCodeHashMismatch",
-        RmpcError::ErrChainIdMismatch => "ErrChainIdMismatch",
-        RmpcError::ErrGatewayPaused => "ErrGatewayPaused",
-        RmpcError::ErrAllowanceInsufficient => "ErrAllowanceInsufficient",
-        RmpcError::ErrBalanceInsufficient => "ErrBalanceInsufficient",
-        RmpcError::ErrVaultDisabled => "ErrVaultDisabled",
-        RmpcError::ErrPolicyExpired => "ErrPolicyExpired",
-        RmpcError::ErrLegUnavailable => "ErrLegUnavailable",
-        RmpcError::ErrSlippageBoundExceeded => "ErrSlippageBoundExceeded",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrOrderIdAlreadySubmitted { .. } => "ErrOrderIdAlreadySubmitted",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrAgentDepositLogMissing { .. } => "ErrAgentDepositLogMissing",
-        RmpcError::ErrVaultPaused => "ErrVaultPaused",
-        RmpcError::ErrWithdrawCapExceeded => "ErrWithdrawCapExceeded",
-        RmpcError::ErrShareBalanceInsufficient => "ErrShareBalanceInsufficient",
-        RmpcError::ErrShareAllowanceInsufficient => "ErrShareAllowanceInsufficient",
-        RmpcError::ErrAgentWithdrawLogMissing { .. } => "ErrAgentWithdrawLogMissing",
-        RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
-        RmpcError::ErrNotAllowlisted => "ErrNotAllowlisted",
-        RmpcError::ErrIcContractNotConfigured => "ErrIcContractNotConfigured",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,21 +818,5 @@ mod tests {
         let deadline = ts.saturating_add(deadline_secs.min(MAX_DEADLINE_SKEW_SECS));
         // 0x64a9f4c0 = 1_688_859_840 → + 300 deadline_secs → 1_688_860_140
         assert_eq!(deadline, 1_688_860_140);
-    }
-
-    #[test]
-    fn error_name_covers_new_variants() {
-        assert_eq!(
-            error_name(&RmpcError::ErrTxReverted {
-                tx_hash: "0x00".into()
-            }),
-            "ErrTxReverted"
-        );
-        assert_eq!(
-            error_name(&RmpcError::ErrAgentDepositLogMissing {
-                tx_hash: "0x00".into()
-            }),
-            "ErrAgentDepositLogMissing"
-        );
     }
 }

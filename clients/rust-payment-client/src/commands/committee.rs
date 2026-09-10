@@ -346,7 +346,7 @@ pub fn run_vote_submit(args: VoteSubmitArgs) -> i32 {
         emit_failure(
             &CommitteeFailure {
                 ok: false,
-                error: error_name_from(&e),
+                error: e.name().to_string(),
                 message: Some(format!("{e}")),
             },
             args.pretty,
@@ -661,7 +661,7 @@ fn fetch_fees(
         emit_failure(
             &CommitteeFailure {
                 ok: false,
-                error: error_name_from(&e),
+                error: e.name().to_string(),
                 message: Some(format!("{e}")),
             },
             pretty,
@@ -684,13 +684,4 @@ fn emit_failure(out: &CommitteeFailure, pretty: bool) {
     } else {
         println!("{}", serde_json::to_string(out).unwrap_or_default());
     }
-}
-
-fn error_name_from(e: &impl std::fmt::Display) -> String {
-    let msg = format!("{e}");
-    msg.split_whitespace()
-        .next()
-        .unwrap_or("UnknownError")
-        .trim_end_matches(':')
-        .to_string()
 }

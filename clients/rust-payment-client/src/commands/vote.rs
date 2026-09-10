@@ -166,7 +166,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &VoteFailure {
                     ok: false,
-                    error: error_name(&err).to_string(),
+                    error: err.name().to_string(),
                     message: Some(format!("{err}")),
                 },
                 args.pretty,
@@ -360,7 +360,7 @@ pub fn run(args: Args) -> i32 {
                 emit_failure(
                     &VoteFailure {
                         ok: false,
-                        error: error_name(&e).to_string(),
+                        error: e.name().to_string(),
                         message: Some(format!("{e}")),
                     },
                     args.pretty,
@@ -417,7 +417,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &VoteFailure {
                     ok: false,
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                 },
                 args.pretty,
@@ -435,7 +435,7 @@ pub fn run(args: Args) -> i32 {
             emit_failure(
                 &VoteFailure {
                     ok: false,
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                 },
                 args.pretty,
@@ -536,24 +536,6 @@ fn emit_output<T: serde::Serialize>(out: &T, pretty: bool) {
 
 fn emit_failure(out: &VoteFailure, pretty: bool) {
     emit_output(out, pretty);
-}
-
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-        _ => "ErrUnknown",
-    }
 }
 
 #[cfg(test)]

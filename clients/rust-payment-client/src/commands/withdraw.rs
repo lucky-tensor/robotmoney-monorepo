@@ -173,7 +173,7 @@ pub fn run(args: Args) -> i32 {
         emit_refusal(
             &WithdrawFailure {
                 status: "refused",
-                error: error_name(&err).to_string(),
+                error: err.name().to_string(),
                 message: Some(format!("{err}")),
                 agent: None,
                 order_id: Some(format!("{order_id:#x}")),
@@ -400,12 +400,12 @@ pub fn run(args: Args) -> i32 {
     let report = match preflight_result {
         Ok(r) => r,
         Err(err) => {
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&err).to_string())));
+            record_audit(&audit.build(AuditDecision::Refused, Some(err.name().to_string())));
             let checks = ChecksOutput::from_err_partial(&err);
             emit_refusal(
                 &WithdrawFailure {
                     status: "refused",
-                    error: error_name(&err).to_string(),
+                    error: err.name().to_string(),
                     message: Some(format!("{err}")),
                     agent: Some(format!("{agent_address:#x}")),
                     order_id: Some(format!("{order_id:#x}")),
@@ -423,12 +423,12 @@ pub fn run(args: Args) -> i32 {
         withdraw_vault_preflight(&rpc, source_vault, gateway_addr, agent_address, shares).await
     });
     if let Err(err) = vault_preflight_result {
-        record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&err).to_string())));
+        record_audit(&audit.build(AuditDecision::Refused, Some(err.name().to_string())));
         let checks = ChecksOutput::from_report(&report);
         emit_refusal(
             &WithdrawFailure {
                 status: "refused",
-                error: error_name(&err).to_string(),
+                error: err.name().to_string(),
                 message: Some(format!("{err}")),
                 agent: Some(format!("{agent_address:#x}")),
                 order_id: Some(format!("{order_id:#x}")),
@@ -452,12 +452,12 @@ pub fn run(args: Args) -> i32 {
             Ok(b) => b,
             Err(e) => {
                 record_audit(
-                    &audit.build(AuditDecision::Refused, Some(error_name(&e).to_string())),
+                    &audit.build(AuditDecision::Refused, Some(e.name().to_string())),
                 );
                 emit_refusal(
                     &WithdrawFailure {
                         status: "refused",
-                        error: error_name(&e).to_string(),
+                        error: e.name().to_string(),
                         message: Some(format!("{e}")),
                         agent: Some(format!("{agent_address:#x}")),
                         order_id: Some(format!("{order_id:#x}")),
@@ -526,12 +526,12 @@ pub fn run(args: Args) -> i32 {
             log::error!("rmpc withdraw: eth_sendRawTransaction failed: {e}");
             record_audit(&audit.build(
                 AuditDecision::BroadcastFailed,
-                Some(error_name(&e).to_string()),
+                Some(e.name().to_string()),
             ));
             emit_refusal(
                 &WithdrawFailure {
                     status: "refused",
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                     agent: Some(format!("{agent_address:#x}")),
                     order_id: Some(format!("{order_id:#x}")),
@@ -576,11 +576,11 @@ pub fn run(args: Args) -> i32 {
             // AZ-RPC-1: timeout ≠ failure — do NOT remove the replay-cache
             // entry. The tx may still land; the operator must inspect the
             // original tx_hash before re-submitting.
-            record_audit(&audit.build(AuditDecision::Refused, Some(error_name(&e).to_string())));
+            record_audit(&audit.build(AuditDecision::Refused, Some(e.name().to_string())));
             emit_refusal(
                 &WithdrawFailure {
                     status: "refused",
-                    error: error_name(&e).to_string(),
+                    error: e.name().to_string(),
                     message: Some(format!("{e}")),
                     agent: Some(format!("{agent_address:#x}")),
                     order_id: Some(format!("{order_id:#x}")),
@@ -823,43 +823,6 @@ fn emit_refusal(out: &WithdrawFailure, pretty: bool) {
     emit(out, pretty);
 }
 
-/// Map an [`RmpcError`] to its stable variant name for operator-visible output.
-fn error_name(err: &RmpcError) -> &'static str {
-    match err {
-        RmpcError::ErrAgentNotAuthorized => "ErrAgentNotAuthorized",
-        RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
-        RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
-        RmpcError::ErrCodeHashMismatch => "ErrCodeHashMismatch",
-        RmpcError::ErrChainIdMismatch => "ErrChainIdMismatch",
-        RmpcError::ErrGatewayPaused => "ErrGatewayPaused",
-        RmpcError::ErrAllowanceInsufficient => "ErrAllowanceInsufficient",
-        RmpcError::ErrBalanceInsufficient => "ErrBalanceInsufficient",
-        RmpcError::ErrVaultDisabled => "ErrVaultDisabled",
-        RmpcError::ErrPolicyExpired => "ErrPolicyExpired",
-        RmpcError::ErrLegUnavailable => "ErrLegUnavailable",
-        RmpcError::ErrSlippageBoundExceeded => "ErrSlippageBoundExceeded",
-        RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
-        RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
-        RmpcError::ErrOrderIdAlreadySubmitted { .. } => "ErrOrderIdAlreadySubmitted",
-        RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
-        RmpcError::ErrAgentDepositLogMissing { .. } => "ErrAgentDepositLogMissing",
-        RmpcError::ErrVaultPaused => "ErrVaultPaused",
-        RmpcError::ErrWithdrawCapExceeded => "ErrWithdrawCapExceeded",
-        RmpcError::ErrShareBalanceInsufficient => "ErrShareBalanceInsufficient",
-        RmpcError::ErrShareAllowanceInsufficient => "ErrShareAllowanceInsufficient",
-        RmpcError::ErrAgentWithdrawLogMissing { .. } => "ErrAgentWithdrawLogMissing",
-        RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
-        RmpcError::ErrNotAllowlisted => "ErrNotAllowlisted",
-        RmpcError::ErrIcContractNotConfigured => "ErrIcContractNotConfigured",
-        RmpcError::ErrConfig(_) => "ErrConfig",
-        RmpcError::ErrIo(_) => "ErrIo",
-        RmpcError::ErrTomlParse(_) => "ErrTomlParse",
-        RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
-        RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
-        RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,24 +985,5 @@ mod tests {
         let expected = keccak256(canonical);
         let actual = RobotMoneyGateway::AgentWithdrawal::SIGNATURE_HASH;
         assert_eq!(actual, expected, "AgentWithdrawal topic0 drift");
-    }
-
-    #[test]
-    fn error_name_covers_withdraw_variants() {
-        assert_eq!(error_name(&RmpcError::ErrVaultPaused), "ErrVaultPaused");
-        assert_eq!(
-            error_name(&RmpcError::ErrShareAllowanceInsufficient),
-            "ErrShareAllowanceInsufficient"
-        );
-        assert_eq!(
-            error_name(&RmpcError::ErrShareBalanceInsufficient),
-            "ErrShareBalanceInsufficient"
-        );
-        assert_eq!(
-            error_name(&RmpcError::ErrAgentWithdrawLogMissing {
-                tx_hash: "0x00".into()
-            }),
-            "ErrAgentWithdrawLogMissing"
-        );
     }
 }

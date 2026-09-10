@@ -164,69 +164,173 @@ pub enum RmpcError {
     ErrRpcDecode(String),
 }
 
+impl RmpcError {
+    /// The stable, operator-visible variant name for this error.
+    ///
+    /// This is the single owner of the variant-name table. Every command
+    /// that prints an `error` field in its JSON refusal body calls this;
+    /// no command module carries its own transcription (issue #1285).
+    ///
+    /// The match is deliberately **exhaustive with no wildcard arm**:
+    /// adding a variant to [`RmpcError`] without extending this table is
+    /// a compile error, which is what stops a new variant reaching
+    /// operators as the string `ErrUnknown`. `docs/technical/
+    /// rmpc-read-output-contract.md` §3.7 makes these names a contract
+    /// downstream tooling matches on, so a silent fallback is a
+    /// contract violation, not a stylistic wart.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RmpcError::ErrAgentNotAuthorized => "ErrAgentNotAuthorized",
+            RmpcError::ErrFeeCapExceeded => "ErrFeeCapExceeded",
+            RmpcError::ErrConcurrentInvocation => "ErrConcurrentInvocation",
+            RmpcError::ErrCodeHashMismatch => "ErrCodeHashMismatch",
+            RmpcError::ErrChainIdMismatch => "ErrChainIdMismatch",
+            RmpcError::ErrGatewayPaused => "ErrGatewayPaused",
+            RmpcError::ErrAllowanceInsufficient => "ErrAllowanceInsufficient",
+            RmpcError::ErrBalanceInsufficient => "ErrBalanceInsufficient",
+            RmpcError::ErrSoftwareSignerDisallowed => "ErrSoftwareSignerDisallowed",
+            RmpcError::ErrProductionSignerRequired => "ErrProductionSignerRequired",
+            RmpcError::ErrOrderIdAlreadySubmitted { .. } => "ErrOrderIdAlreadySubmitted",
+            RmpcError::ErrTxReverted { .. } => "ErrTxReverted",
+            RmpcError::ErrAgentDepositLogMissing { .. } => "ErrAgentDepositLogMissing",
+            RmpcError::ErrVaultPaused => "ErrVaultPaused",
+            RmpcError::ErrWithdrawCapExceeded => "ErrWithdrawCapExceeded",
+            RmpcError::ErrShareBalanceInsufficient => "ErrShareBalanceInsufficient",
+            RmpcError::ErrShareAllowanceInsufficient => "ErrShareAllowanceInsufficient",
+            RmpcError::ErrVaultDisabled => "ErrVaultDisabled",
+            RmpcError::ErrPolicyExpired => "ErrPolicyExpired",
+            RmpcError::ErrLegUnavailable => "ErrLegUnavailable",
+            RmpcError::ErrSlippageBoundExceeded => "ErrSlippageBoundExceeded",
+            RmpcError::ErrAgentWithdrawLogMissing { .. } => "ErrAgentWithdrawLogMissing",
+            RmpcError::ErrVoteAlreadyCast { .. } => "ErrVoteAlreadyCast",
+            RmpcError::ErrNotAllowlisted => "ErrNotAllowlisted",
+            RmpcError::ErrIcContractNotConfigured => "ErrIcContractNotConfigured",
+            RmpcError::ErrConfig(_) => "ErrConfig",
+            RmpcError::ErrIo(_) => "ErrIo",
+            RmpcError::ErrTomlParse(_) => "ErrTomlParse",
+            RmpcError::ErrRpcTransport(_) => "ErrRpcTransport",
+            RmpcError::ErrRpcServer { .. } => "ErrRpcServer",
+            RmpcError::ErrRpcDecode(_) => "ErrRpcDecode",
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, RmpcError>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    /// One live sample per [`RmpcError`] variant.
+    ///
+    /// `every_declared_variant_is_sampled` below scrapes the enum body in
+    /// this very file and fails if this list misses a variant, so adding a
+    /// variant without extending this list is a red test — not a silent
+    /// coverage hole.
+    fn sample_variants() -> Vec<RmpcError> {
+        vec![
+            RmpcError::ErrAgentNotAuthorized,
+            RmpcError::ErrFeeCapExceeded,
+            RmpcError::ErrConcurrentInvocation,
+            RmpcError::ErrCodeHashMismatch,
+            RmpcError::ErrChainIdMismatch,
+            RmpcError::ErrGatewayPaused,
+            RmpcError::ErrAllowanceInsufficient,
+            RmpcError::ErrBalanceInsufficient,
+            RmpcError::ErrSoftwareSignerDisallowed,
+            RmpcError::ErrProductionSignerRequired,
+            RmpcError::ErrOrderIdAlreadySubmitted {
+                tx_hash: "0x00".into(),
+            },
+            RmpcError::ErrTxReverted {
+                tx_hash: "0x00".into(),
+            },
+            RmpcError::ErrAgentDepositLogMissing {
+                tx_hash: "0x00".into(),
+            },
+            RmpcError::ErrVaultPaused,
+            RmpcError::ErrWithdrawCapExceeded,
+            RmpcError::ErrShareBalanceInsufficient,
+            RmpcError::ErrShareAllowanceInsufficient,
+            RmpcError::ErrVaultDisabled,
+            RmpcError::ErrPolicyExpired,
+            RmpcError::ErrLegUnavailable,
+            RmpcError::ErrSlippageBoundExceeded,
+            RmpcError::ErrAgentWithdrawLogMissing {
+                tx_hash: "0x00".into(),
+            },
+            RmpcError::ErrVoteAlreadyCast {
+                proposal_id: "1".into(),
+            },
+            RmpcError::ErrNotAllowlisted,
+            RmpcError::ErrIcContractNotConfigured,
+            RmpcError::ErrConfig("bad field".into()),
+            RmpcError::ErrIo(std::io::Error::other("io")),
+            RmpcError::ErrTomlParse(toml::from_str::<toml::Value>("=").unwrap_err()),
+            RmpcError::ErrRpcTransport("transport".into()),
+            RmpcError::ErrRpcServer {
+                code: -32000,
+                message: "server".into(),
+            },
+            RmpcError::ErrRpcDecode("decode".into()),
+        ]
+    }
+
+    /// Variant identifiers as declared in the `enum RmpcError` body of this
+    /// file. Enum variants sit at exactly four spaces of indentation;
+    /// `RmpcError::…` paths inside `name()` and inside this test module are
+    /// indented further, so they are not picked up.
+    fn declared_variant_names() -> BTreeSet<String> {
+        include_str!("errors.rs")
+            .lines()
+            .filter(|l| l.starts_with("    Err"))
+            .map(|l| {
+                l.trim_start()
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
 
     #[test]
-    fn variant_names_render_via_display() {
-        // The variant name must be the prefix of the Display output —
-        // operator tooling matches on these strings.
-        let cases: &[(RmpcError, &str)] = &[
-            (RmpcError::ErrAgentNotAuthorized, "ErrAgentNotAuthorized"),
-            (RmpcError::ErrFeeCapExceeded, "ErrFeeCapExceeded"),
-            (
-                RmpcError::ErrConcurrentInvocation,
-                "ErrConcurrentInvocation",
-            ),
-            (RmpcError::ErrCodeHashMismatch, "ErrCodeHashMismatch"),
-            (RmpcError::ErrChainIdMismatch, "ErrChainIdMismatch"),
-            (RmpcError::ErrGatewayPaused, "ErrGatewayPaused"),
-            (
-                RmpcError::ErrAllowanceInsufficient,
-                "ErrAllowanceInsufficient",
-            ),
-            (RmpcError::ErrBalanceInsufficient, "ErrBalanceInsufficient"),
-            (RmpcError::ErrVaultDisabled, "ErrVaultDisabled"),
-            (RmpcError::ErrPolicyExpired, "ErrPolicyExpired"),
-            (RmpcError::ErrLegUnavailable, "ErrLegUnavailable"),
-            (
-                RmpcError::ErrSlippageBoundExceeded,
-                "ErrSlippageBoundExceeded",
-            ),
-            (
-                RmpcError::ErrSoftwareSignerDisallowed,
-                "ErrSoftwareSignerDisallowed",
-            ),
-            (
-                RmpcError::ErrProductionSignerRequired,
-                "ErrProductionSignerRequired",
-            ),
-            (
-                RmpcError::ErrOrderIdAlreadySubmitted {
-                    tx_hash: "0x00".into(),
-                },
-                "ErrOrderIdAlreadySubmitted",
-            ),
-            (
-                RmpcError::ErrVoteAlreadyCast {
-                    proposal_id: "1".into(),
-                },
-                "ErrVoteAlreadyCast",
-            ),
-            (RmpcError::ErrNotAllowlisted, "ErrNotAllowlisted"),
-            (
-                RmpcError::ErrIcContractNotConfigured,
-                "ErrIcContractNotConfigured",
-            ),
-        ];
-        for (err, name) in cases {
-            let s = format!("{err}");
+    fn every_declared_variant_is_sampled() {
+        let declared = declared_variant_names();
+        assert!(
+            declared.len() > 25,
+            "the enum-body scraper found only {} variants — it has drifted from the source layout",
+            declared.len()
+        );
+        let sampled: BTreeSet<String> = sample_variants()
+            .iter()
+            .map(|e| e.name().to_string())
+            .collect();
+        assert_eq!(
+            declared, sampled,
+            "sample_variants() must carry exactly one sample per declared RmpcError variant; \
+             extend it (and RmpcError::name()) when adding a variant",
+        );
+    }
+
+    #[test]
+    fn every_variant_has_a_distinct_name_matching_display() {
+        let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+        for err in sample_variants() {
+            let name = err.name();
             assert!(
-                s.starts_with(name),
-                "Display output {s:?} does not start with variant name {name:?}",
+                seen.insert(name),
+                "two RmpcError variants share the operator-visible name {name:?}",
+            );
+            assert_ne!(
+                name, "ErrUnknown",
+                "no variant may render as the ErrUnknown fallback",
+            );
+            let rendered = format!("{err}");
+            assert!(
+                rendered.starts_with(name),
+                "Display output {rendered:?} does not start with variant name {name:?}",
             );
         }
     }
