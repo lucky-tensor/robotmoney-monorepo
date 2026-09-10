@@ -22,6 +22,8 @@ pub const GATEWAY: Address = address!("0000000000000000000000000000000000000b00"
 pub const USDC: Address = address!("0000000000000000000000000000000000000c00");
 pub const VAULT: Address = address!("0000000000000000000000000000000000000d00");
 pub const SHARE_RECEIVER: Address = address!("00000000000000000000000000000000000000ee");
+/// Where a redemption's USDC lands, per the agent policy.
+pub const ASSET_RECIPIENT: Address = address!("00000000000000000000000000000000000000ef");
 
 /// Canned gateway runtime bytecode. The preflight only cares about its
 /// keccak256, so any non-empty blob works.
@@ -319,6 +321,60 @@ pub async fn install_happy_path_mocks(
         ))
         .with_status(200)
         .with_body(jrpc_result_raw(r#"{"timestamp":"0x64a9f4c0"}"#))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+}
+
+/// Wire the withdraw-path preflight reads on top of
+/// [`install_happy_path_mocks`].
+///
+/// **Call this AFTER `install_happy_path_mocks`.** Both mock sets are
+/// registered with `expect_at_least(0)`, which mockito never treats as
+/// "missing hits", so it falls through to the *last* registered matching
+/// mock. Registering this set first would leave the generic `agents()`
+/// mock — which reports zero withdrawal caps — serving every request, and
+/// every withdrawal would refuse before reaching the path under test.
+/// A per-test override registered with the default expectation still wins
+/// its first hit ahead of both sets.
+///
+/// The three vault reads the withdraw preflight makes are already covered
+/// by `install_happy_path_mocks`: `vault.paused()` shares its selector
+/// with `gateway.paused()` (false), and the share allowance/balance reads
+/// are the same ERC-20 selectors it stubs at `u128::MAX`.
+pub async fn install_withdraw_preflight_mocks(
+    server: &mut mockito::ServerGuard,
+    max_withdraw_per_payment: U256,
+    max_withdraw_per_window: U256,
+    withdraw_window_gross: U256,
+) {
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            RobotMoneyGateway::agentsCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_agents_with_withdrawal(
+            true,
+            u64::MAX,
+            U256::from(1_000_000u64),
+            U256::from(100_000_000u64),
+            SHARE_RECEIVER,
+            ASSET_RECIPIENT,
+            max_withdraw_per_payment,
+            max_withdraw_per_window,
+        )))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // effectiveWithdrawWindowGross(agent) — issue #449's rolling window.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            RobotMoneyGateway::effectiveWithdrawWindowGrossCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_u256(withdraw_window_gross)))
         .expect_at_least(0)
         .create_async()
         .await;
