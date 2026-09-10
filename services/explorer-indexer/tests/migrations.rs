@@ -371,6 +371,13 @@ async fn boot_accepts_a_matching_schema_and_starts_indexing() {
 // marker that is mis-spelled, indented, or below the first line would pass a
 // grep while still running inside a transaction, and a future sqlx spelling of
 // the opt-out would defeat a grep entirely.
+//
+// KNOWN LIMIT (issue #1416, filed from this work): on stable Rust `sqlx::migrate!`
+// registers no rerun-if-changed dependency on `migrations/`, and this crate has no
+// build.rs, so a change that touches ONLY a `.sql` file may not recompile the crate
+// against a warm target dir — the guard would then read a stale embedded set. That
+// is a build-freshness defect, not a hole in the guard, and it is tracked separately
+// rather than hidden here.
 
 /// Every migration this binary embeds runs inside a transaction, so a migration
 /// that fails part-way rolls back whole.
