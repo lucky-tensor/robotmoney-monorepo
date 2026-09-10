@@ -2,7 +2,8 @@
 
 > Canonical: `testing/smoke-test/src/lib.rs` (`Fixture::approve_and_confirm`,
 > `Fixture::erc20_allowance`, `wait_for_vault_registered`, `Fixture::cast_send`
-> via `Fixture::pin_next_nonce`).
+> and the funding helpers via `NonceTracker::pin_next_nonce` /
+> `pinned_cast_send`).
 > Sibling class: [`docs/testing/geth-gas-estimation.md`](geth-gas-estimation.md)
 > (state-dependent gas under same-block concurrency).
 
@@ -95,7 +96,7 @@ PortfolioRouter deploy forks a head that already includes the registration. It
 polls with a 30s deadline at 500ms intervals and returns an `Err` naming the
 unsettled registry read if the vault never appears.
 
-### Nonce visibility — `Fixture::cast_send` via `Fixture::pin_next_nonce` (issue #1241)
+### Nonce visibility — every send via `NonceTracker::pin_next_nonce` (issues #1241, #1374)
 
 This is the fourth instance of the class, and the one that hid in plain sight
 the longest: `cast send` itself performs a `latest`-pinned read-after-write
@@ -112,14 +113,20 @@ txpool — which is what makes this instance look like a txpool/gas-pricing
 problem instead of the familiar read-after-write lag.
 
 `Fixture::cast_send` now pins the nonce itself instead of leaning on `cast
-send`'s implicit lookup: `Fixture::pin_next_nonce` queries the
-**`pending`**-tagged count (mempool-inclusive, not mined-only) and, once it
-has pinned a nonce for that address before, polls until a later read comes
-back strictly past it — the same poll-until-settled shape as
-`approve_and_confirm`'s allowance poll, just applied to the read `cast send`
-was performing implicitly. The resolved nonce is then passed to `cast send`
-via `--nonce`, so no seeding transaction depends on cast's own `latest`
+send`'s implicit lookup: `NonceTracker::pin_next_nonce` queries the
+**`pending`**-tagged count (mempool-inclusive, not mined-only) and treats it
+as a *lower bound*, never an authority — see `next_pinned_nonce`, which takes
+`prev + 1` whenever the node has not yet moved past the last nonce this
+harness pinned for that sender. The resolved nonce is then passed to `cast
+send` via `--nonce`, so no seeding transaction depends on cast's own `latest`
 lookup any more.
+
+A pin that a failed send never spends is handed back
+(`NonceTracker::release_pin_if_unused`), and only after the node confirms
+nothing — mined or merely queued — consumed it. Without that, one loud
+funding failure would leave a permanent gap in the sender's sequence and every
+later send would sit in the txpool forever: a hang where the harness should
+have reported an error.
 
 Because a *send*, not just a read, is now retried on the narrow
 `replacement transaction underpriced` case, this instance also needed a
@@ -129,8 +136,32 @@ entered the chain), but `already known` / `nonce too low` are NOT — the
 transaction may already have landed, and blindly re-sending a write like
 `deposit` would double-apply it. Those two are resolved by looking up the
 receipt for whatever transaction actually consumed the pinned nonce, never by
-re-sending. See `Fixture::find_receipt_for_nonce` and the `run_cast_send_retry`
-policy function in `testing/smoke-test/src/lib.rs`.
+re-sending. See `NonceTracker::find_receipt_for_nonce` and the
+`run_cast_send_retry` policy function in `testing/smoke-test/src/lib.rs`.
+
+### The funding path was outside all of it (issue #1374)
+
+The fifth instance was not a new failure mode — it was the same one, in the
+code the fourth fix did not reach. `Fixture::cast_send` pinned its nonces, but
+the *funding* helpers did not: `fund_eth_from_deployer`,
+`fund_usdc_to_deployer` and `Fixture::fund_eth_from_harness` each built a bare
+`cast send` with no `--nonce` and no failure classification. Bring-up funds
+several accounts from a handful of shared keys — the deployer funds the agent
+and the pauser back to back, `seed_demo_depositors` funds every depositor in a
+loop, `DappStack::boot` funds the dapp faucet — so those were the densest
+runs of same-account sends in the whole harness, and the only ones still
+trusting cast's implicit `latest` read. `replacement transaction underpriced`
+surfaced as a panic inside a named test during fixture setup, on three
+different suites, on PRs whose diffs could not have caused it: a false *red*.
+
+Two things changed. The helpers now route through `pinned_cast_send`, which
+shares the tracker and the `run_cast_send_retry` policy with
+`Fixture::cast_send`. And the tracker became safe under concurrency: it holds
+its map lock across the `pending` read instead of only around the lookup and
+the insert, because `seed_demo_depositors` and `DappStack::boot` do issue
+concurrent sends, and two callers that both read before either wrote used to
+pin the *same* nonce — a collision the harness manufactured itself, with no
+help from geth's lag at all.
 
 ## Guidance for harness authors
 
@@ -150,6 +181,9 @@ policy function in `testing/smoke-test/src/lib.rs`.
   lag hides production concurrency; tolerate the lag with a poll instead, the
   same way the gas-estimation class is tolerated by buffering rather than by
   serialising (see [`geth-gas-estimation.md`](geth-gas-estimation.md)).
+  Serialising *nonce issuance* is not an exception to this: the sends still go
+  out concurrently and still mine together, and issuing each sender's nonces
+  one at a time is what makes that concurrency safe rather than what avoids it.
 - **A send's own implicit nonce lookup is a read too.** `cast send` (or any
   wallet library) without an explicit nonce performs the exact same
   `latest`-pinned read-after-write this document covers. Pin the nonce

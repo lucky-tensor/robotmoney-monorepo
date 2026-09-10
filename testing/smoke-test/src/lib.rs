@@ -304,16 +304,12 @@ pub struct Fixture {
     /// `config/dex-pools.json::devnet.pools`.
     demo_uniswap_v3_stubs: DemoUniswapV3StubsDeploymentJson,
     repo_root: PathBuf,
-    /// Per-sender last-pinned nonce, keyed by lowercase `0x`-EOA hex (issue
-    /// #1241). [`Fixture::cast_send`] is the sole nonce source of truth for
-    /// every EOA it sends from: instead of trusting `cast send`'s own
-    /// implicit `eth_getTransactionCount(from, "latest")` (the read that can
-    /// lag a just-mined transaction — see `docs/testing/geth-state-lag.md`),
-    /// it polls a `pending`-tagged read past the previously pinned nonce and
-    /// passes `--nonce` explicitly. Scoped to this `Fixture` (one devnet
-    /// instance) rather than a process-global map, so nonce state from one
-    /// test's devnet never leaks into another test's freshly-reset chain.
-    nonce_tracker: Mutex<HashMap<String, u64>>,
+    /// Harness-owned nonce source of truth for every EOA this devnet sends
+    /// from (issue #1241, extended to the funding path by issue #1374).
+    /// Created before the first boot-time funding send and moved in here, so
+    /// boot funding, deploy funding and every later [`Fixture::cast_send`]
+    /// share one nonce sequence per sender. See [`NonceTracker`].
+    nonce_tracker: NonceTracker,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -596,6 +592,12 @@ impl Fixture {
         let compose_dir = repo_root.join("testing/ethereum-testnet/config");
         let chain_ports = ChainPorts::allocate()?;
         let rpc_url = chain_ports.rpc_url();
+        // One nonce source of truth for this devnet's whole lifetime (issue
+        // #1374). Created here, before the first funding send, and moved into
+        // the `Fixture` below — so the boot-time deployer/holder funding sends
+        // and every later `Fixture::cast_send` from those same keys draw from
+        // a single monotonic sequence instead of two independent ones.
+        let nonce_tracker = NonceTracker::new(rpc_url.clone());
 
         // Issue #255: render the genesis alloc overlay before booting compose
         // so the `setup` container can bind-mount + merge it into the EL
@@ -831,7 +833,7 @@ impl Fixture {
         // the broadcaster (issue #656), so the deployer must hold USDC before
         // the forge script runs. Drip from HARNESS_USDC_HOLDER (genesis grant).
         const DEPLOYER_USDC_GRANT: u128 = 10_000 * 1_000_000; // 10k USDC, 6dp
-        fund_usdc_to_deployer(&rpc_url, DEPLOYER_USDC_GRANT).inspect_err(|err| {
+        fund_usdc_to_deployer(&nonce_tracker, DEPLOYER_USDC_GRANT).inspect_err(|err| {
             logging::error("smoke-test", format!("deployer USDC funding failed: {err}"));
             log_compose_state(
                 &compose_dir,
@@ -1097,20 +1099,22 @@ impl Fixture {
 
         let ic_policy_deployment = read_ic_policy_deployment(&ic_policy_out)?;
 
-        fund_eth_from_deployer(&rpc_url, &agent_hex, "1000000000000000000").inspect_err(|err| {
-            logging::error("smoke-test", format!("funding agent failed: {err}"));
-            log_compose_state(
-                &compose_dir,
-                &compose_files_owned,
-                &compose_log_env,
-                "chain-compose",
-                "agent funding failure",
-                200,
-            );
-            cleanup();
-        })?;
-        fund_eth_from_deployer(&rpc_url, PAUSER_ADDRESS_HEX, "1000000000000000000").inspect_err(
+        fund_eth_from_deployer(&nonce_tracker, &agent_hex, "1000000000000000000").inspect_err(
             |err| {
+                logging::error("smoke-test", format!("funding agent failed: {err}"));
+                log_compose_state(
+                    &compose_dir,
+                    &compose_files_owned,
+                    &compose_log_env,
+                    "chain-compose",
+                    "agent funding failure",
+                    200,
+                );
+                cleanup();
+            },
+        )?;
+        fund_eth_from_deployer(&nonce_tracker, PAUSER_ADDRESS_HEX, "1000000000000000000")
+            .inspect_err(|err| {
                 logging::error("smoke-test", format!("funding pauser failed: {err}"));
                 log_compose_state(
                     &compose_dir,
@@ -1121,8 +1125,7 @@ impl Fixture {
                     200,
                 );
                 cleanup();
-            },
-        )?;
+            })?;
 
         let fx = Fixture {
             compose_dir,
@@ -1141,7 +1144,7 @@ impl Fixture {
             demo_extra_vaults,
             demo_uniswap_v3_stubs,
             repo_root,
-            nonce_tracker: Mutex::new(HashMap::new()),
+            nonce_tracker,
         };
 
         // Fund the agent's USDC balance. Deploy.s.sol no longer mints (USDC
@@ -1488,15 +1491,9 @@ impl Fixture {
         );
         let gas_limit = self.estimate_gas_buffered(&from_hex, &to_hex, sig, args)?;
         let gas_limit_s = gas_limit.to_string();
-        let nonce = self.pin_next_nonce(&from_hex)?;
+        let nonce = self.nonce_tracker.pin_next_nonce(&from_hex)?;
         let nonce_s = nonce.to_string();
 
-        const NONCE_RETRY_DELAYS: [Duration; 4] = [
-            Duration::ZERO,
-            Duration::from_millis(500),
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-        ];
         let v = run_cast_send_retry(
             NONCE_RETRY_DELAYS.len() as u32,
             |attempt| {
@@ -1548,8 +1545,9 @@ impl Fixture {
                     format!("cast send {sig} failed: stdout={stdout} stderr={stderr}"),
                 )
             },
-            || self.find_receipt_for_nonce(&from_hex, nonce),
-        )?;
+            || self.nonce_tracker.find_receipt_for_nonce(&from_hex, nonce),
+        )
+        .inspect_err(|_| self.nonce_tracker.release_pin_if_unused(&from_hex, nonce))?;
 
         let tx_hash = v
             .get("transactionHash")
@@ -1573,6 +1571,62 @@ impl Fixture {
         }
         Ok(tx_hash)
     }
+}
+
+// -- NonceTracker -----------------------------------------------------
+
+/// The nonce this harness pins for the next send from an address, given the
+/// last nonce it pinned for that address (`None` on the first send) and the
+/// node's current `pending` transaction count (issues #1241, #1374).
+///
+/// The node's count is a *lower* bound, never an authority: geth reports a
+/// `pending` count that has not yet absorbed an in-flight send, so two sends
+/// issued close together both read the same number. Taking `prev + 1`
+/// whenever the node has not moved past the last pin makes the harness — not
+/// the node's read timing — the monotonic source of truth for each sender's
+/// nonce sequence. That is what makes two same-account sends structurally
+/// unable to collide, rather than merely unlikely to.
+fn next_pinned_nonce(prev: Option<u64>, pending: u64) -> u64 {
+    match prev {
+        Some(p) => pending.max(p + 1),
+        None => pending,
+    }
+}
+
+/// Harness-owned nonce source of truth for every EOA the devnet harness
+/// sends from (issue #1241, extended by issue #1374).
+///
+/// One tracker exists per devnet instance and is created before the first
+/// funding send in [`Fixture::new`], so boot-time funding, deploy-time
+/// funding and every later [`Fixture::cast_send`] share a single nonce
+/// sequence per sender. Before #1374 the funding helpers
+/// (`fund_eth_from_deployer`, `fund_usdc_to_deployer`,
+/// [`Fixture::fund_eth_from_harness`]) bypassed the tracker entirely and let
+/// `cast send` derive its own nonce from a `latest`-tagged read — the read
+/// that lags a just-sent transaction — so two funding sends from the same
+/// account collided and geth rejected the second with `replacement
+/// transaction underpriced`, reddening PRs whose diffs could not have caused
+/// it. All sends now route through [`NonceTracker::pin_next_nonce`].
+pub(crate) struct NonceTracker {
+    rpc_url: String,
+    /// Per-sender last-pinned nonce, keyed by lowercase `0x`-EOA hex. Scoped
+    /// to one devnet instance rather than a process-global map, so nonce
+    /// state from one test's devnet never leaks into another test's freshly
+    /// reset chain.
+    pins: Mutex<HashMap<String, u64>>,
+}
+
+impl NonceTracker {
+    fn new(rpc_url: impl Into<String>) -> Self {
+        Self {
+            rpc_url: rpc_url.into(),
+            pins: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn rpc_url(&self) -> &str {
+        &self.rpc_url
+    }
 
     /// Pin the nonce for the next send from `from_hex` rather than letting
     /// `cast send` derive it implicitly (issue #1241).
@@ -1585,47 +1639,91 @@ impl Fixture {
     /// return a stale (too-low) nonce and collide with the previous send.
     ///
     /// Instead this queries the `pending`-tagged count (mempool-inclusive,
-    /// not mined-only) and, when a previous call already pinned a nonce for
-    /// this address, polls (bounded, 200ms apart) until the read comes back
-    /// strictly past that nonce before handing out the next one — the same
-    /// poll-until-settled shape as [`Fixture::approve_and_confirm`]'s
-    /// allowance poll. This makes each sender's nonce sequence a
-    /// harness-owned invariant instead of a hope about cast's internal
-    /// timing, and is scoped per-`Fixture` via `nonce_tracker` so it never
-    /// conflates state across two different devnet instances.
+    /// not mined-only) and hands out `next_pinned_nonce(prev, pending)` — the
+    /// node's count only when it has already moved past the last pin, and
+    /// `prev + 1` otherwise.
+    ///
+    /// ## Why the lock spans the read (issue #1374)
+    ///
+    /// The map lock is held across the `pending` read *and* the insert, so
+    /// nonce issuance for a given tracker is serialised. Releasing it around
+    /// the RPC — as this did before #1374 — let two concurrent callers both
+    /// observe the same `prev`, read the same `pending`, and pin the *same*
+    /// nonce; the second send to reach geth was then rejected with
+    /// `replacement transaction underpriced`. `seed_demo_depositors` funds
+    /// from two shared keys on two scoped threads, so that window was live.
     fn pin_next_nonce(&self, from_hex: &str) -> Result<u64, HarnessError> {
+        self.pin_next_nonce_with(from_hex, |addr| {
+            self.eth_get_transaction_count(addr, "pending")
+        })
+    }
+
+    /// [`NonceTracker::pin_next_nonce`] with the `pending`-count read
+    /// injected, so the serialisation invariant is exercisable without a
+    /// chain (see `tests::concurrent_pins_never_hand_out_a_colliding_nonce`).
+    fn pin_next_nonce_with(
+        &self,
+        from_hex: &str,
+        read_pending: impl Fn(&str) -> Result<u64, HarnessError>,
+    ) -> Result<u64, HarnessError> {
         let key = from_hex.to_lowercase();
-        let prev = self
-            .nonce_tracker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-            .copied();
-
-        const ATTEMPTS: u32 = 5;
-        const INTERVAL: Duration = Duration::from_millis(200);
-        let mut nonce = self.eth_get_transaction_count(from_hex, "pending")?;
-        for attempt in 0..ATTEMPTS {
-            if prev.is_none_or(|p| nonce > p) {
-                break;
-            }
-            if attempt + 1 == ATTEMPTS {
-                return Err(HarnessError::other(format!(
-                    "pending nonce for {from_hex} stuck at {nonce} (must exceed the last \
-                     pinned nonce {}) after {ATTEMPTS} attempts ({INTERVAL:?} apart): Geth \
-                     state-lag did not settle",
-                    prev.unwrap_or_default()
-                )));
-            }
-            thread::sleep(INTERVAL);
-            nonce = self.eth_get_transaction_count(from_hex, "pending")?;
-        }
-
-        self.nonce_tracker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, nonce);
+        // Held across the read: see this method's "Why the lock spans the
+        // read" note. `unwrap_or_else(into_inner)` keeps a panicking caller
+        // from poisoning every later send.
+        let mut pins = self.pins.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = read_pending(from_hex)?;
+        let nonce = next_pinned_nonce(pins.get(&key).copied(), pending);
+        pins.insert(key, nonce);
         Ok(nonce)
+    }
+
+    /// Hand a pinned nonce back after a send that failed (issue #1374).
+    ///
+    /// Pins are monotonic, so a nonce pinned for a send that never reached
+    /// the chain — an unfunded faucet, a bad RPC URL — would otherwise leave
+    /// a permanent gap: every later send from that address would pin past the
+    /// unused nonce and sit in the mempool forever. That would turn one loud
+    /// funding failure into a silent hang, the opposite of what this issue is
+    /// for.
+    ///
+    /// Releasing is conditional, never blind: it asks the node for the
+    /// `pending` count first and keeps the pin if anything at all — mined or
+    /// merely queued — already consumed the nonce, so a send whose success
+    /// response was merely lost can never be re-issued under a nonce that is
+    /// already spoken for. Best-effort by construction: if the node cannot be
+    /// reached the pin simply stands, because the caller is already
+    /// propagating a hard error.
+    fn release_pin_if_unused(&self, from_hex: &str, nonce: u64) {
+        let read = |addr: &str| self.eth_get_transaction_count(addr, "pending");
+        self.release_pin_if_unused_with(from_hex, nonce, read);
+    }
+
+    /// [`NonceTracker::release_pin_if_unused`] with the `pending`-count read
+    /// injected, so its "only when genuinely unused" rule is testable without
+    /// a chain.
+    fn release_pin_if_unused_with(
+        &self,
+        from_hex: &str,
+        nonce: u64,
+        read_pending: impl Fn(&str) -> Result<u64, HarnessError>,
+    ) {
+        let Ok(pending) = read_pending(from_hex) else {
+            return;
+        };
+        if pending > nonce {
+            // Something consumed it — keep the pin.
+            return;
+        }
+        let key = from_hex.to_lowercase();
+        let mut pins = self.pins.lock().unwrap_or_else(|e| e.into_inner());
+        if pins.get(&key).copied() != Some(nonce) {
+            // A later send already moved this sender on; not ours to rewind.
+            return;
+        }
+        match nonce.checked_sub(1) {
+            Some(prev) => pins.insert(key, prev),
+            None => pins.remove(&key),
+        };
     }
 
     /// Query `eth_getTransactionCount(address, tag)` via `cast rpc`. `tag` is
@@ -1779,7 +1877,9 @@ impl Fixture {
              transaction was found scanning the last {SCAN_BLOCKS} blocks ({earliest}..={latest_block})"
         )))
     }
+}
 
+impl Fixture {
     /// Best-effort decode of a reverted tx's revert reason via `cast run`,
     /// appended to the harness error for fast diagnosis. Returns an empty
     /// string when no reason can be recovered (e.g. `cast run` unavailable),
@@ -2151,7 +2251,11 @@ impl Fixture {
                     let depositor_hex = format!("{depositor:#x}");
                     // 0.05 ETH comfortably covers two approves + two deposits
                     // (the basket-vault swap legs are the costliest step).
-                    fund_eth_from_deployer(&self.rpc_url, &depositor_hex, "50000000000000000")?;
+                    fund_eth_from_deployer(
+                        &self.nonce_tracker,
+                        &depositor_hex,
+                        "50000000000000000",
+                    )?;
                 }
                 Ok(())
             });
@@ -2457,29 +2561,12 @@ impl Fixture {
             "rpc",
             format!("eth_sendRawTransaction via cast send value={value_wei} -> {to_hex}"),
         );
-        let out = Command::new("cast")
-            .args([
-                "send",
-                "--rpc-url",
-                &self.rpc_url,
-                "--private-key",
-                HARNESS_USDC_HOLDER_PRIVATE_KEY_HEX,
-                "--value",
-                value_wei,
-                &to_hex,
-                "--json",
-            ])
-            .output()?;
-        logging::log_command_output("cast", &out);
-        if !out.status.success() {
-            return Err(HarnessError::other(format!(
-                "fund_eth_from_harness failed: stdout={} stderr={}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )));
-        }
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-            .map_err(|e| HarnessError::other(format!("fund_eth_from_harness json: {e}")))?;
+        let v = pinned_cast_send(
+            &self.nonce_tracker,
+            "fund_eth_from_harness",
+            HARNESS_USDC_HOLDER_PRIVATE_KEY_HEX,
+            &["--value", value_wei, &to_hex],
+        )?;
         Ok(v.get("transactionHash")
             .and_then(|x| x.as_str())
             .unwrap_or("")
@@ -3165,37 +3252,28 @@ fn parse_compose_ps_stdout(stdout: &[u8]) -> Result<Vec<String>, HarnessError> {
 /// `SEED_DEPOSIT_AMOUNT` (1,000 USDC) from the broadcaster (issue #656), so
 /// the deployer must hold USDC *before* deployment — `Fixture::fund_usdc` is
 /// not available yet at that point in the boot sequence.
-fn fund_usdc_to_deployer(rpc_url: &str, amount_units: u128) -> Result<String, HarnessError> {
+fn fund_usdc_to_deployer(
+    tracker: &NonceTracker,
+    amount_units: u128,
+) -> Result<String, HarnessError> {
     logging::debug(
         "rpc",
         format!(
             "eth_sendRawTransaction via cast send usdc transfer {amount_units} -> {DEPLOYER_ADDRESS_HEX}"
         ),
     );
-    let out = Command::new("cast")
-        .args([
-            "send",
-            "--rpc-url",
-            rpc_url,
-            "--private-key",
-            HARNESS_USDC_HOLDER_PRIVATE_KEY_HEX,
+    let amount_s = amount_units.to_string();
+    let v = pinned_cast_send(
+        tracker,
+        "fund deployer usdc",
+        HARNESS_USDC_HOLDER_PRIVATE_KEY_HEX,
+        &[
             genesis_alloc::BASE_USDC_ADDR,
             "transfer(address,uint256)",
             DEPLOYER_ADDRESS_HEX,
-            &amount_units.to_string(),
-            "--json",
-        ])
-        .output()?;
-    logging::log_command_output("cast", &out);
-    if !out.status.success() {
-        return Err(HarnessError::other(format!(
-            "fund deployer usdc failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )));
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| HarnessError::other(format!("fund deployer usdc json: {e}")))?;
+            &amount_s,
+        ],
+    )?;
     Ok(v.get("transactionHash")
         .and_then(|x| x.as_str())
         .unwrap_or("")
@@ -3203,7 +3281,7 @@ fn fund_usdc_to_deployer(rpc_url: &str, amount_units: u128) -> Result<String, Ha
 }
 
 fn fund_eth_from_deployer(
-    rpc_url: &str,
+    tracker: &NonceTracker,
     recipient_hex: &str,
     value_wei: &str,
 ) -> Result<String, HarnessError> {
@@ -3211,33 +3289,112 @@ fn fund_eth_from_deployer(
         "rpc",
         format!("eth_sendRawTransaction via cast send value={value_wei} -> {recipient_hex}"),
     );
-    let out = Command::new("cast")
-        .args([
-            "send",
-            "--rpc-url",
-            rpc_url,
-            "--private-key",
-            DEPLOYER_PRIVATE_KEY_HEX,
-            "--value",
-            value_wei,
-            recipient_hex,
-            "--json",
-        ])
-        .output()?;
-    logging::log_command_output("cast", &out);
-    if !out.status.success() {
-        return Err(HarnessError::other(format!(
-            "fund eth failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )));
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| HarnessError::other(format!("fund eth json: {e}")))?;
+    let v = pinned_cast_send(
+        tracker,
+        "fund eth",
+        DEPLOYER_PRIVATE_KEY_HEX,
+        &["--value", value_wei, recipient_hex],
+    )?;
     Ok(v.get("transactionHash")
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string())
+}
+
+/// Delays before the 2nd, 3rd and 4th attempt of a
+/// [`SendFailureClass::SafeRetry`] send. The first attempt is immediate.
+const NONCE_RETRY_DELAYS: [Duration; 4] = [
+    Duration::ZERO,
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
+
+/// Run one `cast send` under a harness-pinned nonce and the issue #1241
+/// send-failure policy, and return its parsed `--json` receipt.
+///
+/// This is the funding path's half of what [`Fixture::cast_send`] does for
+/// contract pokes (issue #1374). `args` is everything between the pinned
+/// flags and `--json`: either `["--value", wei, recipient]` for a plain value
+/// transfer or `[to, sig, args...]` for a call. Gas is left to `cast`'s own
+/// estimate — unlike [`Fixture::cast_send`] these are fixed-cost transfers
+/// with no same-block state growth to under-estimate (issue #897).
+///
+/// The three properties this buys, none of which the previous bare
+/// `Command::new("cast").arg("send")` had:
+///
+/// 1. **No colliding nonce.** `--nonce` comes from
+///    [`NonceTracker::pin_next_nonce`], which is monotonic per sender and
+///    serialised across threads, so two funding sends from one account
+///    cannot be handed the same nonce. This is the actual defect behind
+///    `replacement transaction underpriced` in fixture bring-up.
+/// 2. **Scoped retry.** Only [`SendFailureClass::SafeRetry`] (the node
+///    refused the send outright, so nothing entered the chain) is retried;
+///    [`SendFailureClass::Ambiguous`] is resolved by receipt lookup, never by
+///    re-sending.
+/// 3. **A genuine failure still fails loudly.** Anything unrecognised —
+///    `insufficient funds` from an unfunded faucet, a bad RPC URL, `cast`
+///    missing — classifies as [`SendFailureClass::Hard`] and propagates
+///    immediately with `{label} failed:` and the full stdout/stderr, so it is
+///    never retried into silence and never mistaken for the nonce race.
+fn pinned_cast_send(
+    tracker: &NonceTracker,
+    label: &str,
+    private_key_hex: &str,
+    args: &[&str],
+) -> Result<serde_json::Value, HarnessError> {
+    let from = derive_address(&privkey_hex_to_bytes(private_key_hex)?);
+    let from_hex = format!("{from:#x}");
+    let nonce = tracker.pin_next_nonce(&from_hex)?;
+    let nonce_s = nonce.to_string();
+    run_cast_send_retry(
+        NONCE_RETRY_DELAYS.len() as u32,
+        |attempt| {
+            if !NONCE_RETRY_DELAYS[attempt as usize].is_zero() {
+                thread::sleep(NONCE_RETRY_DELAYS[attempt as usize]);
+            }
+            let mut cmd = Command::new("cast");
+            cmd.args([
+                "send",
+                "--rpc-url",
+                tracker.rpc_url(),
+                "--private-key",
+                private_key_hex,
+                "--nonce",
+                &nonce_s,
+            ]);
+            cmd.args(args);
+            cmd.arg("--json");
+            let out = match cmd.output() {
+                Ok(out) => out,
+                Err(e) => {
+                    return SendAttemptOutcome::Failed(
+                        SendFailureClass::Hard,
+                        format!("{label} IO error: {e}"),
+                    )
+                }
+            };
+            logging::log_command_output("cast", &out);
+            if out.status.success() {
+                return match serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    Ok(v) => SendAttemptOutcome::Mined(v),
+                    Err(e) => SendAttemptOutcome::Failed(
+                        SendFailureClass::Hard,
+                        format!("{label} json: {e}"),
+                    ),
+                };
+            }
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let class = classify_send_failure(&stderr);
+            SendAttemptOutcome::Failed(
+                class,
+                format!("{label} failed: stdout={stdout} stderr={stderr}"),
+            )
+        },
+        || tracker.find_receipt_for_nonce(&from_hex, nonce),
+    )
+    .inspect_err(|_| tracker.release_pin_if_unused(&from_hex, nonce))
 }
 
 fn run_forge_deploy_with_env(
@@ -4144,7 +4301,7 @@ impl DappStack {
         const DAPP_FAUCET_USDC_RESERVE: u128 = 50_000 * 1_000_000; // 50k USDC, 6dp
         const DAPP_FAUCET_RM_RESERVE: u128 = 50_000 * 1_000_000_000_000_000_000; // 50k RM, 18dp
         fund_eth_from_deployer(
-            fixture.rpc_url(),
+            &fixture.nonce_tracker,
             &format!("{faucet_address:#x}"),
             DAPP_FAUCET_ETH_WEI,
         )
@@ -5206,5 +5363,177 @@ ccc333\t\teth-beacon
         // Reproducible across process restarts, matching the deterministic
         // derivation contract of `demo_depositor_key`.
         assert_eq!(dapp_faucet_key(), dapp_faucet_key());
+    }
+
+    // -- issue #1374: the funding-path nonce race ------------------------
+    //
+    // The production symptom is geth answering a funding `cast send` with
+    // `-32000: replacement transaction underpriced` during fixture bring-up,
+    // which panics the test before it asserts anything. Its cause is two
+    // same-account sends being handed the SAME nonce, and that is what these
+    // tests pin down — the nonce-issuance decision and its serialisation,
+    // both exercisable without Docker or a chain.
+
+    const FUNDING_SENDER: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+
+    #[test]
+    fn next_pinned_nonce_never_repeats_a_nonce_the_node_has_not_absorbed_yet() {
+        // THE RACE, reduced to one decision. geth's `pending` count does not
+        // include a send it has not seen yet, so a second send issued moments
+        // after the first reads the SAME count. Trusting that count verbatim
+        // (`nonce = pending`) hands out nonce 7 twice -> the node rejects the
+        // second with `replacement transaction underpriced`.
+        assert_eq!(next_pinned_nonce(Some(7), 7), 8);
+        // Still true when the node has regressed further behind.
+        assert_eq!(next_pinned_nonce(Some(9), 7), 10);
+    }
+
+    #[test]
+    fn next_pinned_nonce_defers_to_the_node_when_it_has_moved_ahead() {
+        // First send from this address: the harness has no opinion yet, so
+        // the node's count is the only truth available.
+        assert_eq!(next_pinned_nonce(None, 4), 4);
+        // A send this harness did not issue (a forge script broadcasting from
+        // the deployer, say) pushed the count past our last pin — take the
+        // node's number, never a stale `prev + 1` that would collide with it.
+        assert_eq!(next_pinned_nonce(Some(4), 9), 9);
+    }
+
+    #[test]
+    fn concurrent_pins_never_hand_out_a_colliding_nonce() {
+        // Reproduces the race at its source. `seed_demo_depositors` funds on
+        // two scoped threads and `DappStack::boot` funds while the fixture is
+        // live, so concurrent pins for one sender are a real shape here.
+        //
+        // The fake node is a LAGGING one: it always reports the same
+        // `pending` count, exactly as geth does for sends it has not absorbed
+        // yet, and sleeps to widen the window. Before the fix
+        // `pin_next_nonce` released the map lock around this read, so all
+        // eight threads observed the same `prev`, read the same count, and
+        // pinned the same nonce — seven of the eight sends would have come
+        // back `replacement transaction underpriced`. This assertion is red
+        // on that code and green once the lock spans the read.
+        const THREADS: usize = 8;
+        const STALE_PENDING: u64 = 11;
+        let tracker = NonceTracker::new("http://unused.invalid");
+        let pinned: Vec<u64> = thread::scope(|s| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let tracker = &tracker;
+                    s.spawn(move || {
+                        tracker
+                            .pin_next_nonce_with(FUNDING_SENDER, |_| {
+                                thread::sleep(Duration::from_millis(20));
+                                Ok(STALE_PENDING)
+                            })
+                            .expect("pin_next_nonce_with")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("pin thread panicked"))
+                .collect()
+        });
+
+        let mut sorted = pinned.clone();
+        sorted.sort_unstable();
+        let expected: Vec<u64> = (0..THREADS as u64).map(|i| STALE_PENDING + i).collect();
+        assert_eq!(
+            sorted, expected,
+            "concurrent pins for one sender must be distinct and contiguous; got {pinned:?} — a \
+             repeated nonce here IS the `replacement transaction underpriced` failure"
+        );
+    }
+
+    #[test]
+    fn pins_are_scoped_per_sender_address() {
+        // Two different faucet keys must not consume one another's sequence:
+        // the deployer and the USDC holder both fund, concurrently.
+        let tracker = NonceTracker::new("http://unused.invalid");
+        let other = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+        let a1 = tracker
+            .pin_next_nonce_with(FUNDING_SENDER, |_| Ok(3))
+            .unwrap();
+        let b1 = tracker.pin_next_nonce_with(other, |_| Ok(3)).unwrap();
+        let a2 = tracker
+            .pin_next_nonce_with(FUNDING_SENDER, |_| Ok(3))
+            .unwrap();
+        assert_eq!((a1, b1, a2), (3, 3, 4));
+        // Address case must not fork a sender into two sequences.
+        let a3 = tracker
+            .pin_next_nonce_with(&FUNDING_SENDER.to_lowercase(), |_| Ok(3))
+            .unwrap();
+        assert_eq!(a3, 5);
+    }
+
+    #[test]
+    fn a_failed_send_hands_its_unused_nonce_back_for_the_next_one() {
+        // A hard funding failure (unfunded faucet) leaves its pinned nonce
+        // unconsumed. Because pins are monotonic, keeping it would make every
+        // later send from that address pin past a gap and sit in the mempool
+        // forever — one loud failure turning into a silent hang.
+        let tracker = NonceTracker::new("http://unused.invalid");
+        let pinned = tracker
+            .pin_next_nonce_with(FUNDING_SENDER, |_| Ok(5))
+            .unwrap();
+        assert_eq!(pinned, 5);
+        // Node still reports 5 pending: nothing consumed it.
+        tracker.release_pin_if_unused_with(FUNDING_SENDER, pinned, |_| Ok(5));
+        let reused = tracker
+            .pin_next_nonce_with(FUNDING_SENDER, |_| Ok(5))
+            .unwrap();
+        assert_eq!(reused, 5, "the next send must reuse the unspent nonce");
+    }
+
+    #[test]
+    fn a_send_that_did_land_keeps_its_nonce_pinned() {
+        // The mirror case: the send failed from cast's point of view but the
+        // node already absorbed it. Rewinding here would re-issue a nonce
+        // that is already spoken for — which is precisely the `replacement
+        // transaction underpriced` collision this issue exists to remove.
+        let tracker = NonceTracker::new("http://unused.invalid");
+        let pinned = tracker
+            .pin_next_nonce_with(FUNDING_SENDER, |_| Ok(5))
+            .unwrap();
+        tracker.release_pin_if_unused_with(FUNDING_SENDER, pinned, |_| Ok(6));
+        let next = tracker
+            .pin_next_nonce_with(FUNDING_SENDER, |_| Ok(6))
+            .unwrap();
+        assert_eq!(next, 6, "a consumed nonce must never be handed out twice");
+    }
+
+    #[test]
+    fn a_genuine_funding_failure_is_not_retried_and_stays_distinguishable() {
+        // AC: an unfunded faucet must still fail LOUDLY, and must not be
+        // mistaken for (or retried like) the nonce race. `insufficient funds`
+        // classifies Hard, so the first attempt's message propagates verbatim
+        // and `attempt` is never called again — the failure cannot be retried
+        // into silence.
+        let calls = std::cell::Cell::new(0u32);
+        let err = run_cast_send_retry(
+            4,
+            |_| {
+                calls.set(calls.get() + 1);
+                SendAttemptOutcome::Failed(
+                    SendFailureClass::Hard,
+                    "fund eth failed: stdout= stderr=server returned an error response: error \
+                     code -32000: insufficient funds for gas * price + value"
+                        .to_string(),
+                )
+            },
+            || panic!("a hard funding failure must never be resolved by receipt lookup"),
+        )
+        .expect_err("an unfunded faucet must surface as an error");
+        assert_eq!(calls.get(), 1, "a hard funding failure must not be retried");
+        let text = err.to_string();
+        assert!(
+            text.contains("fund eth failed") && text.contains("insufficient funds"),
+            "the funding label and the node's reason must both survive: {text}"
+        );
+        assert!(
+            !text.contains("replacement transaction underpriced"),
+            "a genuine funding failure must not read as the nonce race: {text}"
+        );
     }
 }
