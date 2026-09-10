@@ -285,6 +285,52 @@ cd testing/ethereum-testnet/config
 docker compose -f docker-compose.yaml -f docker-compose.dapp.yaml up --build
 ```
 
+### Per-service restart and rebuild
+
+`explorer-indexer` and `explorer-api` are built as two **separate images**
+from two targets of `docker/rust-services.Dockerfile` (issue #1354), so either
+can be rebuilt or restarted on its own. Iterating on one explorer service does
+not require rebuilding the chain, re-running the genesis build, or
+re-deploying contracts, and Postgres keeps its data.
+
+The explorer services live in the dapp overlay's own compose project
+(`robotmoney-dapp`); the chain is a separate project (`ethereum-testnet`) and
+none of these commands touch it.
+
+```bash
+cd testing/ethereum-testnet/config
+
+# Restart one service in place — no rebuild, same image.
+docker compose -f docker-compose.dapp.yaml restart explorer-api
+
+# Rebuild one service's image from source and recreate only that container.
+docker compose -f docker-compose.dapp.yaml up -d --build explorer-api
+
+# Follow one service's logs.
+docker compose -f docker-compose.dapp.yaml logs -f explorer-indexer
+```
+
+Swap `explorer-indexer` for `explorer-api` to iterate on the indexer instead.
+The `dapp`, `postgres`, and `receipt-fixtures` containers stay up throughout.
+
+Every `docker compose` invocation — `restart` included — re-evaluates the
+compose file's `${VAR:?...}` substitutions, so the same required env vars the
+initial bring-up needed must still be exported. If the stack was launched by
+`cargo run -p smoke-test -- --full-stack`, the harness also chose the host
+ports; re-export `EXPLORER_API_PORT` / `DAPP_PORT` / `POSTGRES_PORT` to match
+the URLs it printed, or compose republishes on the defaults in the table
+above.
+
+**`restart` does not re-evaluate `depends_on`.** `docker compose restart`
+restarts an existing container in place; it does not recreate it and does not
+re-check the `explorer-migrate: service_completed_successfully` barrier that
+`up` uses to order the schema migration ahead of both readers. What still
+fails safe on that path is explorer-api's own `/health` probe, which `SELECT`s
+from `indexer_runs` (`clients/explorer-api/src/routes.rs`) and therefore
+cannot report healthy while the explorer schema is missing. If a schema change
+is part of what you are testing, use `up -d`, which evaluates the migrator
+gate; `restart` will not run the migrator for you.
+
 ### Contract address source
 
 Same as §1: `deployments/devnet.json`. The smoke-test binary reads this file
