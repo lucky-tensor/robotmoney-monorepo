@@ -345,16 +345,21 @@ have silently not run. It did not bite: run 34148606346 provisioned real contain
 (8.4s container boot, ~1.4-2.6s per test), and the same property was independently
 proven by a dependency-free unit test — this was a latent shape, not an outage.
 `clients/explorer-api/tests/canonical_schema.rs` carried the same one-call-site
-version, also fixed under #1377. The `services/explorer-indexer/` fixture keeps the
-`Option` return with an environment-gated escalation added by issue #1283; the
-residual structural risk and `fork_indexer.rs`'s ungated variant are tracked in
-issue #1383.
+version, also fixed under #1377. The `services/explorer-indexer/` fixture was the
+largest surviving instance — 59 call sites across 13 test files, holding the
+`Option` return behind an environment-gated escalation added by issue #1283 — and
+was converted structurally under issue #1383, along with `fork_indexer.rs`'s
+ungated `can_run()` variant.
 
 ### Detecting check
 The fixtures no longer return `Option` — `try_pg_fixture() -> Option<PgFixture>`
-became `pg_fixture() -> PgFixture` in `services/watchdog/tests/common/mod.rs`, and
+became `pg_fixture() -> PgFixture` in `services/watchdog/tests/common/mod.rs`,
 `try_pool() -> Option<PgPool>` became `pg_pool() -> PgPool` in
-`clients/explorer-api/tests/canonical_schema.rs`. Both panic with a
+`clients/explorer-api/tests/canonical_schema.rs`, and `try_pg_fixture` /
+`try_raw_pg` became `pg_fixture` / `raw_pg` in
+`services/explorer-indexer/tests/common/mod.rs` (issue #1383, which also deleted
+that module's `skip_or_panic()` and `pg_is_required()`, leaving
+`EXPLORER_INDEXER_REQUIRE_PG` inert). All panic with a
 `REQUIRED DEPENDENCY UNAVAILABLE` prefix naming Docker, so the `else { return; }`
 guard is not merely discouraged but **uncompilable** — a future caller cannot
 reintroduce the shape at these call sites without first re-adding the sentinel.
@@ -376,10 +381,11 @@ one-line summary would suggest:
 
 **Nothing detects a _new_ instance of this shape.** The type signature protects the
 call sites that exist; no check would catch a future author introducing another
-`Option`-returning fixture elsewhere in the tree, and the surviving
-`services/explorer-indexer/` fixture is guarded only by an environment variable
-(issue #1383). Re-verify by hand: run a built test binary with `docker` absent from
-`PATH` and confirm a non-zero exit, as recorded on PR #1381.
+`Option`-returning fixture elsewhere in the tree. As of issue #1383 no known
+instance survives in `services/*/tests/` or `clients/*/tests/`, but that is the
+result of a hand-run sweep, not a standing check. Re-verify by hand: run a built
+test binary with `docker` absent from `PATH` and confirm a non-zero exit, as
+recorded on PR #1381.
 
 ---
 
@@ -425,3 +431,55 @@ present, so the fix cannot degrade into "any quoted path anywhere counts". Both
 were confirmed red against the pre-fix parser before being made green. Generally:
 when a guard parses a real file, seed its self-test with every syntactic shape
 that file is allowed to use, not just the shape it happens to use most.
+---
+
+## An assertion is guarded on a build artifact the job produces later
+
+### Name
+`artifact-guard-runs-before-build`
+
+### Mechanism
+A test asserts on a build artifact (a bundle, a generated schema, a compiled
+binary) and wraps its body in an existence guard so it degrades gracefully when
+the artifact is absent:
+
+```ts
+if (!existsSync(distIndex)) {
+  return;
+}
+```
+
+The guard is justified by a comment claiming the CI job builds the artifact
+first. Nothing checks that claim against the workflow, and step order drifts —
+or was never that way. When the build step actually runs *after* the test step,
+the guard fires on every CI run: the test returns normally, the runner counts it
+as passed, and the per-file test count stays non-zero, so an executed-count
+guard sees nothing wrong. The assertions inside the guard have never run in CI a
+single time, while the test name in the log asserts, in words, that they did.
+
+This is the `optional-fixture-early-return` shape with a `fs.existsSync` in place
+of an `Option`, and it is harder to spot: the missing resource is not an external
+service that a reviewer knows the runner lacks, it is an artifact the same job
+demonstrably produces — just too late. Reading the test alone can never detect
+it; the defect lives in the ordering of two steps in a different file.
+
+### Instance
+`clients/dapp/tests/unit/csp.test.ts`'s "emits the CSP meta tag into the
+production build output" carried the guard above under the comment "In CI the
+production build runs before vitest, so dist/ exists". That was false:
+`.github/workflows/suite-09-dapp-quality.yml` ran its `Vitest` step before its
+`Production build` step. On PR #1413's head `c4ebe62f`, job 102873057610 logged
+`csp.test.ts (7 tests)` passing at 13:51:27 and first wrote the production bundle
+at 13:52:19 — the three `expect(html)` assertions had executed zero times, in a
+gate whose stated purpose is enforcing the strict CSP (issue #1383).
+
+### Detecting check
+The guard now throws, naming the missing artifact and the command that produces
+it, and `.github/workflows/suite-09-dapp-quality.yml`'s `Production build` step
+was moved ahead of its `Vitest` step in the same change — so the resource is
+wired into the job rather than assumed. The throw is the detector: if that
+ordering is ever reversed again, `dapp-lint-build` turns red at the Vitest step
+with `dist/index.html is missing`, instead of quietly skipping. The complementary
+manual check is to grep a test for an `existsSync`/`Path.exists` early return over
+a build output and read the producing workflow's step order rather than the
+comment above the guard.

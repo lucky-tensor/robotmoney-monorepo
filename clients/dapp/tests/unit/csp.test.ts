@@ -62,12 +62,18 @@ describe("CSP policy", () => {
     expect(CSP_META_POLICY).not.toContain("frame-ancestors");
   });
 
-  it("emits the CSP meta tag into the production build output when present", () => {
+  it("emits the CSP meta tag into the production build output", () => {
     const distIndex = fileURLToPath(new URL("../../dist/index.html", import.meta.url));
-    // In CI the production build runs before vitest, so dist/ exists. Locally
-    // it may be absent; skip rather than trigger a slow build inside the test.
+    // The production build is a REQUIRED resource for this assertion, not an
+    // optional one: `.github/workflows/suite-09-dapp-quality.yml` runs its
+    // `Production build` step immediately before `Vitest` so dist/index.html
+    // exists here. Fail loudly rather than returning early — a silent no-op
+    // reported this test green while executing zero assertions (issue #1383).
     if (!existsSync(distIndex)) {
-      return;
+      throw new Error(
+        `dist/index.html is missing at ${distIndex}. Run \`bun run build\` before ` +
+          `\`bun run test\` (CI does this in the Production build step).`,
+      );
     }
     const html = readFileSync(distIndex, "utf8");
     expect(html).toMatch(/http-equiv="Content-Security-Policy"/);

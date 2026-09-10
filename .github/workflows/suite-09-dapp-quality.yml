@@ -58,6 +58,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# CI taxonomy: this suite proves one component (the dApp) is internally correct
+# — lint, types, unit tests, and a production bundle — with no external
+# environment. Runtime/system correctness is suite 10's job.
+env:
+  CI_CLASS: feature-correctness
+
 jobs:
   lint-build:
     name: dapp-lint-build
@@ -90,9 +96,10 @@ jobs:
       - name: Install Playwright Chromium
         run: bunx playwright install chromium --with-deps
 
-      - name: Vitest
-        run: bun run test
-
+      # MUST run before Vitest: tests/unit/csp.test.ts asserts on the built
+      # dist/index.html and now fails loudly when that artifact is absent
+      # (issue #1383). Previously this step ran after Vitest, so the CSP
+      # production-build assertion silently no-opped and reported green.
       - name: Production build
         # VITE_GIT_COMMIT is consumed by vite.config.ts (via process.env.VITE_GIT_COMMIT)
         # so the About modal always shows a non-empty 12-char SHA in CI, preview, and
@@ -100,6 +107,9 @@ jobs:
         env:
           VITE_GIT_COMMIT: ${{ github.sha }}
         run: bun run build
+
+      - name: Vitest
+        run: bun run test
 
       - name: Dependency vulnerability audit
         # Scans for high and critical severity advisories (CVSS >= 7.0) via
