@@ -47,6 +47,7 @@ use crate::config::Config;
 use crate::errors::{Result, RmpcError};
 use crate::gateway::{Erc20, RobotMoneyGateway};
 use crate::rpc::{CallRequest, FailoverRpcClient};
+use serde::Serialize;
 
 /// Window length in seconds. Mirrors `RobotMoneyGateway.WINDOW_SECONDS`
 /// (constant on-chain, baked into the contract). Re-reading it on every
@@ -340,6 +341,41 @@ impl<'a> Preflight<'a> {
         })
     }
 
+    /// Vault-side preflight for a redemption leg (issue #312, #1285):
+    ///
+    /// 1. `vault.paused() == false`
+    /// 2. `vault.allowance(agent, gateway) >= shares`
+    /// 3. `vault.balanceOf(agent) >= shares`
+    ///
+    /// The redeem burns the agent's *vault shares*, which the gateway
+    /// pulls from the source vault, so these are the share-side mirror of
+    /// the USDC allowance/balance checks in [`Self::run`]. `withdraw` runs
+    /// it once for the source vault; `withdraw-router` runs it per
+    /// identity-bound `(vault, shares)` leg.
+    ///
+    /// This is the policy layer's rule. It previously lived in
+    /// `commands::withdraw` with its own private copies of the three
+    /// `eth_call` decoders, which made `commands::withdraw_router` import
+    /// a policy rule from a sibling command module.
+    pub async fn run_withdraw_vault(
+        &self,
+        vault: Address,
+        gateway: Address,
+        agent: Address,
+        shares: U256,
+    ) -> Result<()> {
+        if self.call_view_paused(vault).await? {
+            return Err(RmpcError::ErrVaultPaused);
+        }
+        if self.call_view_allowance(vault, agent, gateway).await? < shares {
+            return Err(RmpcError::ErrShareAllowanceInsufficient);
+        }
+        if self.call_view_balance_of(vault, agent).await? < shares {
+            return Err(RmpcError::ErrShareBalanceInsufficient);
+        }
+        Ok(())
+    }
+
     // --- typed view helpers ---------------------------------------------
 
     async fn call_view_paused(&self, gateway: Address) -> Result<bool> {
@@ -545,6 +581,78 @@ impl<'a> Preflight<'a> {
         let decoded = Erc20::balanceOfCall::abi_decode_returns(&out, true)
             .map_err(|e| RmpcError::ErrRpcDecode(format!("balanceOf decode: {e}")))?;
         Ok(decoded._0)
+    }
+}
+
+/// Preflight snapshot, in the same order as [`PreflightReport`]. Numeric
+/// values that may exceed `u64` are serialised as decimal strings so the
+/// JSON survives `JSON.parse` in JavaScript callers without precision loss.
+#[derive(Debug, Serialize)]
+pub struct ChecksOutput {
+    pub chain_id_match: bool,
+    pub gateway_code_hash_match: bool,
+    pub gateway_paused: bool,
+    pub agent_active: bool,
+    pub agent_valid_until: u64,
+    pub max_per_payment: String,
+    pub max_per_window: String,
+    pub window_gross: String,
+    pub allowance: String,
+    pub balance: String,
+}
+
+impl ChecksOutput {
+    pub(crate) fn from_report(r: &PreflightReport) -> Self {
+        Self {
+            chain_id_match: true,
+            gateway_code_hash_match: r.gateway_runtime_hash_ok,
+            gateway_paused: r.paused,
+            agent_active: r.agent_active,
+            agent_valid_until: r.agent_valid_until,
+            max_per_payment: r.max_per_payment.to_string(),
+            max_per_window: r.max_per_window.to_string(),
+            window_gross: r.window_gross.to_string(),
+            allowance: r.allowance.to_string(),
+            balance: r.balance.to_string(),
+        }
+    }
+
+    /// Best-effort partial snapshot when only the [`RmpcError`] is
+    /// available. Mirrors the per-error logic that `self-check`'s `run`
+    /// uses for the same purpose.
+    pub(crate) fn from_err_partial(err: &RmpcError) -> Self {
+        let mut c = Self::unknown();
+        match err {
+            RmpcError::ErrChainIdMismatch => {}
+            RmpcError::ErrCodeHashMismatch => {
+                c.chain_id_match = true;
+            }
+            RmpcError::ErrGatewayPaused => {
+                c.chain_id_match = true;
+                c.gateway_code_hash_match = true;
+                c.gateway_paused = true;
+            }
+            _ => {
+                c.chain_id_match = true;
+                c.gateway_code_hash_match = true;
+            }
+        }
+        c
+    }
+
+    pub(crate) fn unknown() -> Self {
+        Self {
+            chain_id_match: false,
+            gateway_code_hash_match: false,
+            gateway_paused: false,
+            agent_active: false,
+            agent_valid_until: 0,
+            max_per_payment: "0".into(),
+            max_per_window: "0".into(),
+            window_gross: "0".into(),
+            allowance: "0".into(),
+            balance: "0".into(),
+        }
     }
 }
 

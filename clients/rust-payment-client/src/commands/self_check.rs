@@ -36,7 +36,7 @@ use crate::config::Config;
 use crate::errors::RmpcError;
 use crate::gateway::{Erc20, RobotMoneyGateway};
 use crate::network_env::NetworkEnv;
-use crate::policy::{Preflight, PreflightInputs, PreflightReport};
+use crate::policy::{ChecksOutput, Preflight, PreflightInputs};
 use crate::rpc::{CallRequest, FailoverRpcClient};
 use crate::signer::software::{SoftwareSigner, PASSPHRASE_ENV_VAR};
 use crate::signer::{backend_is_production_grade, AgentSigner, SignerBackendKind};
@@ -75,78 +75,6 @@ pub struct SelfCheckOutput {
     /// `ok == false`. Operator tooling matches on this string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-/// Preflight snapshot, in the same order as [`PreflightReport`]. Numeric
-/// values that may exceed `u64` are serialised as decimal strings so the
-/// JSON survives `JSON.parse` in JavaScript callers without precision loss.
-#[derive(Debug, Serialize)]
-pub struct ChecksOutput {
-    pub chain_id_match: bool,
-    pub gateway_code_hash_match: bool,
-    pub gateway_paused: bool,
-    pub agent_active: bool,
-    pub agent_valid_until: u64,
-    pub max_per_payment: String,
-    pub max_per_window: String,
-    pub window_gross: String,
-    pub allowance: String,
-    pub balance: String,
-}
-
-impl ChecksOutput {
-    pub(crate) fn from_report(r: &PreflightReport) -> Self {
-        Self {
-            chain_id_match: true,
-            gateway_code_hash_match: r.gateway_runtime_hash_ok,
-            gateway_paused: r.paused,
-            agent_active: r.agent_active,
-            agent_valid_until: r.agent_valid_until,
-            max_per_payment: r.max_per_payment.to_string(),
-            max_per_window: r.max_per_window.to_string(),
-            window_gross: r.window_gross.to_string(),
-            allowance: r.allowance.to_string(),
-            balance: r.balance.to_string(),
-        }
-    }
-
-    /// Best-effort partial snapshot when only the [`RmpcError`] is
-    /// available. Mirrors the per-error logic that `self-check`'s `run`
-    /// uses for the same purpose.
-    pub(crate) fn from_err_partial(err: &RmpcError) -> Self {
-        let mut c = Self::unknown();
-        match err {
-            RmpcError::ErrChainIdMismatch => {}
-            RmpcError::ErrCodeHashMismatch => {
-                c.chain_id_match = true;
-            }
-            RmpcError::ErrGatewayPaused => {
-                c.chain_id_match = true;
-                c.gateway_code_hash_match = true;
-                c.gateway_paused = true;
-            }
-            _ => {
-                c.chain_id_match = true;
-                c.gateway_code_hash_match = true;
-            }
-        }
-        c
-    }
-
-    pub(crate) fn unknown() -> Self {
-        Self {
-            chain_id_match: false,
-            gateway_code_hash_match: false,
-            gateway_paused: false,
-            agent_active: false,
-            agent_valid_until: 0,
-            max_per_payment: "0".into(),
-            max_per_window: "0".into(),
-            window_gross: "0".into(),
-            allowance: "0".into(),
-            balance: "0".into(),
-        }
-    }
 }
 
 /// Agent-key compromise blast radius for the withdrawal path. Mirrors
@@ -485,6 +413,7 @@ fn backend_operator_message(backend: SignerBackendKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::PreflightReport;
     use alloy_primitives::U256;
 
     fn sample_report() -> PreflightReport {

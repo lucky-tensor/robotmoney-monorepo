@@ -37,3 +37,7 @@ pub mod scan_remediation_seams;
 pub mod scan_residual_seams;
 pub mod signer;
 pub mod tx;
+/// The orchestration owner for every `rmpc` write command — the shared
+/// prologue and epilogue `deposit`, `withdraw` and `withdraw-router` used to
+/// copy verbatim (issue #1285).
+pub mod write_path;
