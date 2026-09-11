@@ -156,12 +156,20 @@
 use alloy_primitives::{keccak256, B256};
 use alloy_sol_types::sol;
 
+// Every event interface below carries `#[sol(abi)]`, which generates
+// `<Interface>::abi::events()` — the runtime `alloy_json_abi::Event` view of
+// these declarations, carrying each parameter's `indexed` flag. Topic-0 does
+// not encode indexedness, so without this view no gate can see an `indexed`
+// swap between two same-type parameters: the log still decodes cleanly and the
+// values land transposed (issue #1368). `event_topics_match_foundry_artifacts`
+// compares that view against the compiled Foundry artifacts.
 sol! {
     /// Event surface from `RouterGovernance`.
     ///
     /// Signatures match `RouterGovernance.sol` exactly so that
     /// `SolEvent::SIGNATURE_HASH` and the `Topics` keccak strings agree
     /// with the on-chain topic-0.  See `docs/architecture.md §5.4`.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IRouterGovernanceEvents {
         /// Emitted when a new governance proposal is created.
@@ -194,6 +202,7 @@ sol! {
 
     /// Event surface from `IGateway`. Names match the Solidity source so
     /// `SolEvent::SIGNATURE_HASH` lines up with the on-chain topic.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IGatewayEvents {
         /// IGateway.sol:97
@@ -244,6 +253,7 @@ sol! {
 
     /// Event surface from `RobotMoneyVault`. Trigger set for state
     /// snapshots per ADR §3.5.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IVaultEvents {
         event Allocated(uint256 indexed index, address indexed adapter, uint256 amount);
@@ -288,6 +298,7 @@ sol! {
 
     /// Event surface from `VaultRegistry`.  Signatures match `VaultRegistry.sol`
     /// exactly — see §3.5 in `docs/technical/vault-registry-decisions.md`.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IVaultRegistryEvents {
         /// Emitted once when a vault is added to the registry.
@@ -315,6 +326,7 @@ sol! {
     ///
     /// Signatures match `PortfolioRouter.sol` exactly so that
     /// `SolEvent::SIGNATURE_HASH` agrees with the on-chain topic-0.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IPortfolioRouterEvents {
         /// Emitted once per vault leg on each `deposit()` call.
@@ -357,6 +369,7 @@ sol! {
     ///   AgentRegistered  — upserts committee_agents row.
     ///   AgentRevoked     — sets committee_agents.active = false.
     ///   VoteSubmitted    — stores commitment; memo hash-verification sets verified.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IInvestmentCommitteePolicyEvents {
         /// Emitted when ADMIN_ROLE registers a committee agent.
@@ -398,6 +411,7 @@ sol! {
     /// **No event carries a signature parameter** (architecture §4.9): the
     /// analysts' ed25519 signatures are payload data verified off-chain, never
     /// event data.
+    #[sol(abi)]
     #[allow(missing_docs)]
     interface IConsensusRecommendationReceiptEvents {
         /// Emitted when a committee submitter records a receipt commitment.
@@ -604,14 +618,23 @@ mod tests {
         }
     }
 
+    /// One event exactly as the compiled Foundry artifact declares it.
+    #[derive(Debug)]
+    struct ArtifactEvent {
+        topic0: B256,
+        /// `(parameter name, indexed)` in declaration order. The `indexed`
+        /// half is invisible to `topic0` — see `indexed_flags_mismatch`.
+        params: Vec<(String, bool)>,
+    }
+
     /// Read a Foundry artifact and return every event it declares as
-    /// `name -> [topic-0, ...]` (a `Vec` because Solidity permits overloads).
+    /// `name -> [event, ...]` (a `Vec` because Solidity permits overloads).
     ///
     /// Panics — loudly, never skips — when the artifact is missing. A missing
     /// `out/` means `forge build` did not run, and a drift gate that quietly
     /// passes when it cannot read the thing it guards is the exact defect
     /// issue #1346 exists to fix.
-    fn artifact_event_topics(contract_dir: &str, contract: &str) -> BTreeMap<String, Vec<B256>> {
+    fn artifact_events(contract_dir: &str, contract: &str) -> BTreeMap<String, Vec<ArtifactEvent>> {
         let out = foundry_out_dir();
         let path = out.join(contract_dir).join(format!("{contract}.json"));
         let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -629,23 +652,130 @@ mod tests {
             .as_array()
             .unwrap_or_else(|| panic!("Foundry artifact {} has no `abi` array", path.display()));
 
-        let mut topics: BTreeMap<String, Vec<B256>> = BTreeMap::new();
+        let mut events: BTreeMap<String, Vec<ArtifactEvent>> = BTreeMap::new();
         for entry in entries {
             if entry["type"].as_str() != Some("event") {
                 continue;
             }
             let name = entry["name"].as_str().unwrap_or_default();
-            let params = entry["inputs"]
-                .as_array()
-                .map(|p| p.iter().map(param_type).collect::<Vec<_>>().join(","))
-                .unwrap_or_default();
-            let signature = format!("{name}({params})");
-            topics
+            let inputs = entry["inputs"].as_array().cloned().unwrap_or_default();
+            let types = inputs.iter().map(param_type).collect::<Vec<_>>().join(",");
+            let signature = format!("{name}({types})");
+            let params = inputs
+                .iter()
+                .map(|p| {
+                    (
+                        p["name"].as_str().unwrap_or_default().to_string(),
+                        // Absent `indexed` in an ABI entry means `false`; a
+                        // missing key must never read as "indexed", or the gate
+                        // would pass on a malformed artifact.
+                        p["indexed"].as_bool().unwrap_or(false),
+                    )
+                })
+                .collect();
+            events
                 .entry(name.to_string())
                 .or_default()
-                .push(keccak256(signature.as_bytes()));
+                .push(ArtifactEvent {
+                    topic0: keccak256(signature.as_bytes()),
+                    params,
+                });
         }
-        topics
+        events
+    }
+
+    /// Every event declared by the `sol!` interfaces in this file, keyed by
+    /// topic-0, as `(event name, [(parameter name, indexed), ...])`.
+    ///
+    /// Topic-0 is the key because it is what the check table already carries
+    /// and because it disambiguates the two distinct `AgentRevoked` events
+    /// (`IGatewayEvents` and `IInvestmentCommitteePolicyEvents`) that share a
+    /// name but not a signature.
+    fn sol_events_by_topic0() -> BTreeMap<B256, (String, Vec<(String, bool)>)> {
+        let mut out: BTreeMap<B256, (String, Vec<(String, bool)>)> = BTreeMap::new();
+        macro_rules! collect {
+            ($($iface:ident),+ $(,)?) => {$(
+                for event in $iface::abi::events().into_values().flatten() {
+                    let params = event
+                        .inputs
+                        .iter()
+                        .map(|p| (p.name.clone(), p.indexed))
+                        .collect::<Vec<_>>();
+                    let topic0 = event.selector();
+                    if let Some((prior_name, prior_params)) = out.get(&topic0) {
+                        assert_eq!(
+                            (prior_name, prior_params),
+                            (&event.name, &params),
+                            "two sol! declarations share topic-0 {topic0:?} but disagree on \
+                             their parameters — one of them is wrong"
+                        );
+                    }
+                    out.insert(topic0, (event.name.clone(), params));
+                }
+            )+};
+        }
+        collect!(
+            IGatewayEvents,
+            IVaultEvents,
+            IVaultRegistryEvents,
+            IRouterGovernanceEvents,
+            IPortfolioRouterEvents,
+            IInvestmentCommitteePolicyEvents,
+            IConsensusRecommendationReceiptEvents,
+        );
+        out
+    }
+
+    /// Compare the `indexed` bitmask the compiled artifact declares against the
+    /// one the `sol!` declaration in this file declares, returning a message
+    /// that names the offending event **and parameter** on mismatch.
+    ///
+    /// Parameter *names* are deliberately not compared: the ERC-4626 `Deposit`
+    /// / `Withdraw` events call their first parameter `sender` in OpenZeppelin
+    /// and `caller` in the `sol!` declaration, which is harmless — only the
+    /// position and the `indexed` flag decide where a decoded value lands.
+    fn indexed_flags_mismatch(
+        contract: &str,
+        event: &str,
+        artifact: &[(String, bool)],
+        declared: &[(String, bool)],
+    ) -> Option<String> {
+        if artifact.len() != declared.len() {
+            return Some(format!(
+                "ABI drift for {contract}.{event}: the compiled artifact declares \
+                 {} parameters, the sol! declaration {}",
+                artifact.len(),
+                declared.len()
+            ));
+        }
+        for (position, ((artifact_name, artifact_indexed), (declared_name, declared_indexed))) in
+            artifact.iter().zip(declared).enumerate()
+        {
+            if artifact_indexed != declared_indexed {
+                return Some(format!(
+                    "ABI drift for {contract}.{event}, parameter {position} \
+                     (`{artifact_name}` in Solidity, `{declared_name}` in abi.rs): the compiled \
+                     Foundry artifact declares it {}, the sol! declaration in \
+                     services/explorer-indexer/src/abi.rs declares it {}.\n\
+                     Topic-0 does NOT encode which parameters are `indexed`, so this event still \
+                     decodes without error — the indexer just writes the values into the wrong \
+                     columns. An `indexed` swap between two same-type parameters transposes them \
+                     silently (issue #1368). Update the `sol!` declaration to match the Solidity \
+                     source.",
+                    if *artifact_indexed {
+                        "`indexed`"
+                    } else {
+                        "not `indexed`"
+                    },
+                    if *declared_indexed {
+                        "`indexed`"
+                    } else {
+                        "not `indexed`"
+                    },
+                ));
+            }
+        }
+        None
     }
 
     /// **The Solidity-truth ABI drift gate (issue #1346).**
@@ -663,6 +793,21 @@ mod tests {
     /// emits — and fails if the indexer's topic differs. A Solidity signature
     /// change with no corresponding `abi.rs` change turns this RED, which is
     /// exactly the class of silent event-drop the indexer shipped in #366.
+    ///
+    /// **The `indexed` half (issue #1368).** Topic-0 is derived from the
+    /// signature string, which does not say which parameters are `indexed`.
+    /// Changing the *number* of indexed parameters still fails loudly — the
+    /// topic count changes and `decode_log(&log, true)` returns
+    /// `IndexerError::Decode`. But **swapping** `indexed` between two
+    /// same-type parameters (`AgentRevoked(address indexed agent, address
+    /// owner)` → `AgentRevoked(address agent, address indexed owner)`) leaves
+    /// topic-0, the topic count and the decode all unchanged, and the indexer
+    /// writes `agent` and `owner` transposed into `insert_agent_policy`. A
+    /// silent write-path corruption on identity-shaped columns, invisible to
+    /// every topic-0 gate. So this test also compares the per-parameter
+    /// `indexed` bitmask the artifact declares against the `sol!`
+    /// declaration's, taken from `<Interface>::abi::events()` rather than from
+    /// a fourth hand-maintained copy.
     ///
     /// Requires `forge build` to have populated `out/`; it panics with
     /// instructions rather than skipping when the artifacts are absent.
@@ -855,14 +1000,17 @@ mod tests {
             ),
         ];
 
+        // The `sol!` declarations' own view of themselves, keyed by topic-0.
+        let declared = sol_events_by_topic0();
+
         // Cache each artifact so a contract's JSON is parsed once, not once per event.
-        let mut cache: BTreeMap<&str, BTreeMap<String, Vec<B256>>> = BTreeMap::new();
+        let mut cache: BTreeMap<&str, BTreeMap<String, Vec<ArtifactEvent>>> = BTreeMap::new();
         let mut checked = 0usize;
 
         for (dir, contract, event, indexer_topic) in checks {
             let artifact = cache
                 .entry(contract)
-                .or_insert_with(|| artifact_event_topics(dir, contract));
+                .or_insert_with(|| artifact_events(dir, contract));
             let candidates = artifact.get(*event).unwrap_or_else(|| {
                 panic!(
                     "ABI drift: `{event}` is not declared by {contract} in the compiled \
@@ -872,15 +1020,34 @@ mod tests {
                     artifact.keys().collect::<Vec<_>>()
                 )
             });
-            assert!(
-                candidates.contains(indexer_topic),
-                "ABI drift for {contract}.{event}: the indexer filters on topic-0 \
-                 {indexer_topic:?}, but the compiled Foundry artifact declares \
-                 {candidates:?}. The Solidity signature changed without a matching change \
-                 in services/explorer-indexer/src/abi.rs, so every {event} log would be \
-                 silently dropped. Update the `sol!` declaration, the `Topics::new()` \
-                 keccak literal, and the `abi_drift_gate` table to the new signature."
-            );
+            let compiled = candidates
+                .iter()
+                .find(|c| c.topic0 == *indexer_topic)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ABI drift for {contract}.{event}: the indexer filters on topic-0 \
+                         {indexer_topic:?}, but the compiled Foundry artifact declares {:?}. \
+                         The Solidity signature changed without a matching change in \
+                         services/explorer-indexer/src/abi.rs, so every {event} log would be \
+                         silently dropped. Update the `sol!` declaration, the `Topics::new()` \
+                         keccak literal, and the `abi_drift_gate` table to the new signature.",
+                        candidates.iter().map(|c| c.topic0).collect::<Vec<_>>()
+                    )
+                });
+
+            // Issue #1368: same signature, same topic-0, different indexedness.
+            let (_, declared_params) = declared.get(indexer_topic).unwrap_or_else(|| {
+                panic!(
+                    "no `sol!` declaration in abi.rs has topic-0 {indexer_topic:?} for \
+                     {contract}.{event} — `Topics::new()` and the `sol!` interfaces disagree, \
+                     or the event's interface is missing from `sol_events_by_topic0()`"
+                )
+            });
+            if let Some(message) =
+                indexed_flags_mismatch(contract, event, &compiled.params, declared_params)
+            {
+                panic!("{message}");
+            }
             checked += 1;
         }
 
@@ -895,6 +1062,38 @@ mod tests {
             checked >= 27,
             "artifact cross-check covered only {checked} events — entries were removed \
              from the table without removing the corresponding topic from `Topics`"
+        );
+
+        // SELF-TEST OF THE `indexed` COMPARISON (issue #1368).
+        // The loop above only ever observes this comparison passing, and a
+        // comparison nobody has seen fail is not a gate. Transpose `indexed`
+        // between the two same-type parameters of the real `AgentRevoked`
+        // declaration and assert the comparison rejects it, naming the
+        // parameter. Both sides keep the same topic-0 and the same topic
+        // count, so this is exactly the mutation topic-0 cannot see.
+        let (_, agent_revoked) = declared
+            .get(&t.agent_revoked)
+            .expect("AgentRevoked must be among the sol! declarations");
+        assert_eq!(
+            agent_revoked,
+            &vec![("agent".to_string(), true), ("owner".to_string(), true),],
+            "AgentRevoked's declared parameters changed — update this self-test's fixture"
+        );
+        let transposed = vec![("agent".to_string(), false), ("owner".to_string(), true)];
+        let message = indexed_flags_mismatch(
+            "RobotMoneyGateway",
+            "AgentRevoked",
+            &transposed,
+            agent_revoked,
+        )
+        .expect(
+            "the `indexed` comparison accepted an AgentRevoked whose two same-type address \
+             parameters have their `indexed` flags transposed — the gate is blind to the exact \
+             defect issue #1368 exists to catch",
+        );
+        assert!(
+            message.contains("parameter 0") && message.contains("agent"),
+            "the mismatch message must name the offending parameter, got: {message}"
         );
     }
 
