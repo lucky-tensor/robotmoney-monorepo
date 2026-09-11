@@ -118,10 +118,15 @@ jobs:
         #     direct deposit.
         #   - RwaVault.t.sol — deSPXA deposit/redeem round-trip and stale-oracle
         #     halt (PRD §11.4, ADR-0006).
-        #   - BasketVault / AgentTokenVault — per-vault basket composition.
+        #   - BasketVault / AgentTokenVault / ProtocolAssetVault — per-vault
+        #     basket composition. All THREE basket vaults are named: this guard
+        #     covered two of them while ProtocolAssetVault shipped without a
+        #     shortlist() at all and its dapp composition panel rendered
+        #     "unavailable" (issue #1364). A per-vault guard that skips a vault
+        #     is not a per-vault guard.
         run: |
           forge test -vvv --match-path "contracts/test/DeployDemoExtraVaults.t.sol"
-          forge test -vvv --match-contract 'Rwa|DeSPXA|Despxa|BasketVault|AgentTokenVault'
+          forge test -vvv --match-contract 'Rwa|DeSPXA|Despxa|BasketVault|AgentTokenVault|ProtocolAssetVault'
 
       - name: forge test (unified-vault ERC-4626 conformance per composition + EIP-170 size gate — issue #1127)
         # Explicit, named guard so the ADR-0010 unified-vault deliverables cannot
