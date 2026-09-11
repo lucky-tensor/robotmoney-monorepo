@@ -39,6 +39,11 @@
  * one that ships without the function reds this test instead of degrading
  * quietly in the dapp.
  *
+ * `RwaVault` is the third `BasketVault` subclass and is deliberately absent: it
+ * declares no `shortlist()` either, and the hoist onto `BasketVault` that would
+ * give every basket vault one is 682 bytes over EIP-170 on `RwaVault`. It joins
+ * `PAIRS` when #1435 fixes that.
+ *
  * `registryAbi` (previously excluded here for its own real, pre-existing
  * `getVault` drift from `VaultRegistry.sol` — issue #1348) is fixed and
  * included below.

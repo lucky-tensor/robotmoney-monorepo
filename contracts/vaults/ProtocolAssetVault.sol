@@ -79,7 +79,8 @@ contract ProtocolAssetVault is BasketVault {
     ///      #1364 (and the vault-family convergence that would give the family one
     ///      declaration site is #1286). `RwaVault` is registered inactive and is
     ///      not currently classified as a basket by the dapp; giving it
-    ///      `shortlist()` is tracked separately.
+    ///      `shortlist()`, and the byte budget that would allow the hoist, are
+    ///      tracked in #1435.
     ///
     ///      The body is identical to `AgentTokenVault.shortlist()`: both are a
     ///      single delegation to the externally-linked `BasketViews` library, which
