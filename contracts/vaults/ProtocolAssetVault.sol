@@ -7,6 +7,7 @@ pragma solidity ^0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ISwapRouter} from "../interfaces/ISwapRouter.sol";
 import {BasketVault} from "./BasketVault.sol";
+import {BasketViews, IBasketVaultViews} from "../lib/BasketViews.sol";
 
 /// @title ProtocolAssetVault
 /// @notice PROTOTYPE ERC-4626 USDC vault holding a basket of protocol assets
@@ -56,5 +57,45 @@ contract ProtocolAssetVault is BasketVault {
 
     function maxAssets() public pure override returns (uint256) {
         return _MAX_ASSETS;
+    }
+
+    /// @notice Returns token address, pool, swap fee, active flag, and current vault
+    ///         balance for every basket entry. Intended for off-chain display and
+    ///         rmpc reads.
+    ///
+    /// @dev Issue #1364. The dapp classifies a vault as a basket from its registry
+    ///      risk label and then calls `shortlist()` unconditionally
+    ///      (clients/dapp/src/components/VaultDetail.tsx `CompositionSection`).
+    ///      This vault's risk label is VOLATILE, so it was always classified as a
+    ///      basket — but only `AgentTokenVault` declared `shortlist()`, so every
+    ///      call here reverted and the composition panel rendered "unavailable".
+    ///
+    ///      Declared per-vault rather than hoisted onto `BasketVault` because the
+    ///      base is shared with `RwaVault`, which has 82 bytes of EIP-170 runtime
+    ///      margin. Measured on this branch: the hoist costs every `BasketVault`
+    ///      subclass 764 bytes, taking `RwaVault` from 24,494 B to 25,258 B —
+    ///      682 B OVER the 24,576 B limit, so `forge build --sizes` fails. Making
+    ///      room would mean refactoring `RwaVault`, which is out of scope for
+    ///      #1364 (and the vault-family convergence that would give the family one
+    ///      declaration site is #1286). `RwaVault` is registered inactive and is
+    ///      not currently classified as a basket by the dapp; giving it
+    ///      `shortlist()` is tracked separately.
+    ///
+    ///      The body is identical to `AgentTokenVault.shortlist()`: both are a
+    ///      single delegation to the externally-linked `BasketViews` library, which
+    ///      is where the array-building loop lives precisely so it is not inlined
+    ///      into this EIP-170-tight vault family.
+    function shortlist()
+        external
+        view
+        returns (
+            address[] memory tokens,
+            address[] memory pools,
+            uint24[] memory fees,
+            bool[] memory active,
+            uint256[] memory balances
+        )
+    {
+        return BasketViews.shortlist(IBasketVaultViews(address(this)));
     }
 }

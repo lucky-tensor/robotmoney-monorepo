@@ -659,8 +659,13 @@ decoded a `VaultRegistry` shape that no longer existed (#1348).
 - Step 3 runs one named `--lib` test and deliberately does not compile
   `explorer-indexer`'s `tests/` binaries — it is not that crate's unit gate
   (suite 8 and suite 4's `--all-targets` are). See the step comment.
-- `generate_abi_bindings.sh` emits `AgentTokenVault` but not `ProtocolAssetVault`:
-  only the former declares `shortlist()`, which is itself a defect (#1364).
+- `generate_abi_bindings.sh` emits BOTH basket vaults (`AgentTokenVault` and
+  `ProtocolAssetVault`) into `abi.generated.ts`, and
+  `clients/dapp/tests/unit/abi-parity.test.ts` checks the hand-maintained
+  `BASKET_VAULT_SHORTLIST_ABI` against each. Until #1364 only `AgentTokenVault`
+  declared `shortlist()`, so the dapp called a selector `ProtocolAssetVault` did
+  not have and its composition panel rendered "unavailable". Pairing the
+  fragment against every basket vault is what turns the next such omission red.
 
 ---
 

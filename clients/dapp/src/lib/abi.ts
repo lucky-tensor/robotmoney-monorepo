@@ -520,8 +520,16 @@ export type RouterActionName = "deposit";
  * section to enumerate the basket composition without a connected
  * wallet (wagmi useReadContract works without a signer).
  *
- * The on-chain `shortlist()` (contracts/vaults/AgentTokenVault.sol, via
- * BasketViews.sol) returns FIVE PARALLEL ARRAYS, not an array of structs:
+ * BOTH basket vaults declare it. Until issue #1364 only AgentTokenVault did,
+ * so this fragment named a selector ProtocolAssetVault did not have and every
+ * ProtocolAssetVault composition panel rendered "unavailable".
+ * `tests/unit/abi-parity.test.ts` now checks this fragment against the
+ * canonical Foundry artifact for EACH basket vault, so the next basket vault
+ * that ships without `shortlist()` reds CI instead of degrading quietly.
+ *
+ * The on-chain `shortlist()` (contracts/vaults/AgentTokenVault.sol and
+ * contracts/vaults/ProtocolAssetVault.sol, both via BasketViews.sol) returns
+ * FIVE PARALLEL ARRAYS, not an array of structs:
  *
  *   (address[] tokens, address[] pools, uint24[] fees,
  *    bool[] active, uint256[] balances)
