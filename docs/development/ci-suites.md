@@ -526,13 +526,14 @@ isolation, independent of any client (rmpc, dapp, explorer).
 9. `cargo test -p smoke-test --release --test cli_meta -- --nocapture` — boots `smoke-test --full-stack`, checks the structured endpoint summary, verifies `--dapp-port` / Ctrl-C teardown, and writes `smoke-test-cli_meta.log`
 10. `cargo test -p smoke-test --release --test fixture_meta -- --test-threads=1 --nocapture` — boots devnet, deploys contracts, asserts healthy RPC + block production, then tears down; verifies `Drop` runs compose-down cleanly and writes `smoke-test-fixture_meta.log`
 11. `cargo test -p smoke-test --release --test demo_seeding -- --test-threads=1 --nocapture` (four-vault real-TVL, issue #592) — boots the devnet fixture, seeds the simulated depositors, and asserts the four-vault real-TVL end state: `VaultRegistry.listVaults()` returns **exactly four Active** vaults (PRD §11.1–§11.4); `PortfolioRouter.getWeights()` covers the three router-eligible vaults summing to 10000 bps while the deSPXA RWA vault is never weighted (direct-seed-only, ADR-0006 §1); and **all four** vaults report non-zero on-chain `totalAssets` after seeding. Writes `smoke-test-demo_seeding.log`. **This gate runs exactly once per suite run — on the `demo_seeding` matrix binary only** (see de-dup note below).
-12. Four more devnet matrix rows, folded in by issue #1311 (each boots its own `Fixture`, runs a handful of RPC/`cast` round-trips, and tears down — no dapp-stack build, no reseed):
+12. `bash .github/scripts/cargo_test_require_executed.sh -p smoke-test --release --test full_stack_demo_tvl -- --test-threads=1 --nocapture` — the **full-stack** (as opposed to fixture-only) half of the four-vault gate. Boots the whole compose stack (chain + dapp + explorer-api + indexer) via `DappStack::boot` **once**, then makes both explorer-API end-state assertions against that one stack: `GET /v1/vaults` returns exactly four entries, each Active with non-zero `total_assets` (issue #592), and `GET /v1/router/weights` returns non-empty `current_weights` summing to exactly 10000 bps (issue #615). Each assertion keeps its own independent 90 s indexer-settle budget. Writes `smoke-test-full_stack_demo_tvl.log`. Unlike step 11's `demo_seeding`, which reads the **chain** (`VaultRegistry.listVaults()`, `PortfolioRouter.getWeights()`), this row reads what the **indexer wrote and the explorer-api serves** — the two are not substitutes, and neither can be dropped for the other.
+13. Four more devnet matrix rows, folded in by issue #1311 (each boots its own `Fixture`, runs a handful of RPC/`cast` round-trips, and tears down — no dapp-stack build, no reseed):
     - `cargo test -p smoke-test --release --test faucet_eth -- --test-threads=1 --nocapture` — native Base ETH faucet drip round-trip (issue #466): harness EOA holds non-zero ETH at boot, `fund_eth_from_harness` grows the recipient's balance by the exact drip amount
     - `cargo test -p smoke-test --release --test faucet_rm -- --test-threads=1 --nocapture` — RM token faucet drip round-trip (issue #365): RmToken deployed non-zero, harness holds initial supply, `fund_rm_token` grows the recipient's balance by the exact amount and emits a matching `Transfer` log
     - `cargo test -p smoke-test --release --test fund_usdc -- --test-threads=1 --nocapture` — real-signed-transfer assertions (issue #255 step 7): exact-amount USDC transfer, correct `Transfer` log, the tx signature recovers to `HARNESS_USDC_HOLDER`, and the devnet backend is Geth (`web3_clientVersion`) with Anvil cheat RPCs (`anvil_setBalance`) rejected
     - `cargo test -p smoke-test --release --test governance -- --test-threads=1 --nocapture` — RouterGovernance deploy + `setVotingPower` round-trip (issue #364) against the **actual `forge script Deploy` output**: `RouterGovernance` non-zero with bytecode, `setVotingPower` round-trips, deployer holds `ADMIN_ROLE`
     Each is wrapped in `cargo_test_require_executed.sh` so a run that silently collects zero tests fails red rather than green (issue #1311 AC). All four write `smoke-test-<binary>.log`.
-13. Upload smoke-test logs from `$RUNNER_TEMP/robotmoney-smoke-test/` as a CI artifact, then run `docker compose down -v --remove-orphans || true` for the safety-net teardown
+14. Upload smoke-test logs from `$RUNNER_TEMP/robotmoney-smoke-test/` as a CI artifact, then run `docker compose down -v --remove-orphans || true` for the safety-net teardown
 
 > **Note:** Step 10 exercises `Fixture::new()` end-to-end — the same code
 > path that all devnet-backed suites (7, 8, 10, 11, 12) depend on. A
@@ -540,11 +541,45 @@ isolation, independent of any client (rmpc, dapp, explorer).
 >
 > **Four-vault coverage (issue #592):** Step 11 is the integration-layer half
 > of the four-vault real-TVL test pyramid; the forge layer (suite 1–2 step 7)
-> is the contract half. The companion full-stack assertion
-> `full_stack_demo_tvl::explorer_api_shows_four_active_nonzero_vaults_after_boot`
-> (`GET /v1/vaults` returns exactly four Active entries, each non-zero
-> `total_assets`) boots the heavier `DappStack` and is run locally / via the
-> dapp suites rather than this fixture-only suite.
+> is the contract half. The companion full-stack assertion — `GET /v1/vaults`
+> returns exactly four Active entries, each with non-zero `total_assets` —
+> boots the heavier `DappStack` and is the **`full_stack_demo_tvl` matrix row
+> of this suite** (step 12). Before issue #1371 this doc claimed it ran "locally
+> / via the dapp suites"; it has been a suite-14 matrix row since issue #600.
+>
+> **Full-stack TVL boot de-dup (issue #1371):** full-stack TVL coverage used to
+> boot the devnet **four times per PR into `dev`**, for two assertions:
+>
+> | | before #1371 | after #1371 |
+> |---|---|---|
+> | `full_stack_demo_tvl.rs` `#[test]` fns | 2, each with its own `Fixture::new()` + `DappStack::boot` | 1, both assertions against one boot |
+> | jobs running that binary | 2 — this suite's `full_stack_demo_tvl` row **and** suite-19's `demo-tvl-full-stack`, identical cargo invocation, identical `pull_request: branches: [dev]` + `push: [dev]` triggers | 1 — this suite's row only |
+> | devnet bring-ups per PR | **4** | **1** |
+>
+> Measured on `dev` commit `44299b40`, both jobs green, both logging
+> `test result: ok. 2 passed; 0 failed; 0 ignored`:
+> `smoke-test-devnet-full_stack_demo_tvl` **46m56s** (run 34540953030, job
+> 103087891903) of which the two boots were **23m22s + 21m33s**; suite-19
+> `demo-tvl-full-stack` **45m51s** (run 34540952832, job 103087822627). Total
+> **1h32m47s** of runner time. After the change the same coverage is one row of
+> ~24 min, and suite-19 no longer boots a devnet at all.
+>
+> **No assertion was dropped.** Both poll loops, both 90 s indexer-settle
+> budgets, and both panic messages moved verbatim into
+> `explorer_api_reports_four_vault_tvl_and_router_weights_after_boot`, which
+> calls them in the original order; the first assertion returning normally means
+> it passed and control falls through to the second. Suite-14's row was the one
+> kept because it strictly dominates the deleted suite-19 job: it routes through
+> `cargo_test_require_executed.sh` (a zero-collected run fails loudly instead of
+> going green), pre-pulls the chain images off the boot critical path, and
+> uploads the log artifact — none of which the suite-19 job did. Host `bun` is
+> not required: the dapp bundle is built inside `docker-compose.dapp.yaml`,
+> which is why this row has always passed without `oven-sh/setup-bun`.
+>
+> Do not re-split `full_stack_demo_tvl.rs` into two `#[test]` fns and do not add
+> a second `DappStack::boot` to that binary — each pair costs a ~22-minute
+> devnet bring-up. A new full-stack assertion belongs inside the existing test,
+> against the already-booted stack.
 >
 > **Parallel matrix + four-vault de-dup (issues #600, #915):** the
 > devnet-booting binaries run as a parallel matrix
@@ -751,19 +786,40 @@ Catches CSP weakening by dependency upgrades before deployment.
 
 ---
 
-### 19. ERC-4626 precondition checks and full-stack demo-TVL matrix
+### 19. ERC-4626 precondition checks matrix
 **Suggested file:** `.github/workflows/suite-19-erc4626-demo-tvl-matrix.yml`
-**Environment:** `anvil` (precondition) / `devnet` (demo-tvl)
-**Trigger paths:** `contracts/test/ERC4626PreconditionChecks.t.sol`, `testing/smoke-test/tests/full_stack_demo_tvl.rs`, and the workflow file itself
+**Environment:** `anvil`
+**Trigger paths:** `contracts/test/ERC4626PreconditionChecks.t.sol` and the workflow file itself
+**CI_CLASS:** `feature-correctness` (declared at workflow level in issue #1371)
 
 **Tier:** HEAVY — the `dev` merge gate. Runs on every `pull_request` targeting `dev` (no `paths:` filter) and on `push` to `dev`. Not triggered on PRs to other branches, keeping routine feature-PR cycles fast.
 
 **Jobs:**
-- `erc4626-precondition` — matrix-sharded forge tests; runs immediately
-- `demo-tvl` — full-stack demo-TVL integration test against Geth+Lighthouse devnet; runs in parallel with precondition
+- `erc4626-precondition` — matrix-sharded forge tests; the suite's only job
 
-**Design rationale (issue #814, #804):**
-Two complementary test-matrix expansions that live in one suite to keep the total workflow count manageable and share HEAVY-tier trigger logic.
+**The `demo-tvl` job was removed in issue #1371.** Its single test step was
+`cargo test -p smoke-test --release --test full_stack_demo_tvl -- --test-threads=1 --nocapture`
+— the identical cargo invocation on the identical test binary already run by the
+`full_stack_demo_tvl` row of suite 14's devnet matrix, under identical triggers
+(`pull_request: branches: [dev]` + `push: [dev]`). Every PR into `dev` therefore
+paid for the same devnet bring-up twice: measured on `dev` commit `44299b40`,
+`demo-tvl-full-stack` **45m51s** (run 34540952832, job 103087822627) alongside
+`smoke-test-devnet-full_stack_demo_tvl` **46m56s** (run 34540953030, job
+103087891903), both green, both logging `test result: ok. 2 passed`. The
+suite-14 row was kept because it strictly dominates — it routes through
+`cargo_test_require_executed.sh`, pre-pulls the chain images, and uploads the log
+artifact, none of which this job did. See §14, "Full-stack TVL boot de-dup
+(issue #1371)", for the full before/after and the proof that no assertion was
+lost.
+
+The workflow **file name and `name:` keep the `demo-tvl` token on purpose**:
+suite numbering is referenced by path from `.github/workflows/suite-21-nightly.yml`'s
+dispatch list, from this section, and from
+`docs/technical/testcode-removal-seams.md` §2.5. Renaming is churn with no signal
+value; this section and the workflow's header comment carry the truth instead.
+The suite now boots no devnet and needs no Docker.
+
+**Design rationale (issue #814):**
 
 **ERC-4626 precondition tests (issue #814):**
 `contracts/test/ERC4626PreconditionChecks.t.sol` asserts invariants across the adapter and exit-fee matrix. The precondition suite validates:
@@ -773,34 +829,22 @@ Two complementary test-matrix expansions that live in one suite to keep the tota
 
 The matrix shards by exit-fee tier (`EXIT_FEE_BPS` = 0, 30, 100) so each tier's Foundry fuzz run (256 runs per tier) stays isolated and fast. Uses an `exit_fee_bps` matrix variable to parameterize the test.
 
-**Full-stack demo-TVL test (issue #804):**
-`testing/smoke-test/tests/full_stack_demo_tvl.rs` is a heavy INTEGRATION test that boots the full DappStack (Geth+Lighthouse devnet, contracts deployed by Fixture, dapp bundled with keccak-256 hash verification) and seeds the demo depositors, then asserts the four-vault real-TVL end state:
-- `VaultRegistry.listVaults()` returns exactly four Active vaults (PRD §11.1–§11.4)
-- `PortfolioRouter.getWeights()` covers the three router-eligible vaults summing to 10000 bps, while the deSPXA RWA vault is never weighted (direct-seed-only, ADR-0006 §1)
-- All four vaults report non-zero `totalAssets` after seeding
+**Where the full-stack demo-TVL test lives now (issues #804, #1371):**
+`testing/smoke-test/tests/full_stack_demo_tvl.rs` is a heavy INTEGRATION test that boots the full DappStack (Geth+Lighthouse devnet, contracts deployed by Fixture, dapp bundled with keccak-256 hash verification) and seeds the demo depositors, then asserts the explorer-API end state:
+- `GET /v1/vaults` returns exactly four entries, each Active (`status == 0`) with non-zero `total_assets` (issue #592, PRD §11.1–§11.4)
+- `GET /v1/router/weights` returns non-empty `current_weights` summing to exactly 10000 bps (issue #615; the deSPXA RWA vault **is** router-eligible at 500 bps — ADR-0006 §1 as amended 2026-06-05, issue #621)
 
-This is the HEAVY-tier integration-layer half of the four-vault real-TVL test pyramid (the contract-layer half is suite 1–2, step 7). It is not run on routine feature PRs because DappStack boot + seeding takes 25–35 minutes; instead, it runs as part of the `dev` merge gate (PRs into `dev` and push to `dev`).
+It is the HEAVY-tier integration-layer half of the four-vault real-TVL test pyramid (the contract-layer half is suite 1–2, step 7; the chain-read half is suite 14's `demo_seeding` row). Since issue #1371 it runs in exactly **one** place — suite 14's `full_stack_demo_tvl` matrix row, §14 step 12 — and makes both assertions against a single `DappStack::boot`. This section previously described it as asserting `VaultRegistry.listVaults()` / `PortfolioRouter.getWeights()` on-chain with the RWA vault never weighted; that described suite 14's `demo_seeding` row, not this test, and predated issue #621.
 
 **Activation history:**
 - `erc4626-precondition`: activated in issue #814 — ERC4626PreconditionChecks.t.sol created and `if: false` removed
-- `demo-tvl`: activated in issue #804 — full_stack_demo_tvl.rs exists; bun runner dependency resolved via `oven-sh/setup-bun@v2`
+- `demo-tvl`: activated in issue #804 — full_stack_demo_tvl.rs exists; bun runner dependency resolved via `oven-sh/setup-bun@v2`. **Removed in issue #1371** as an exact duplicate of suite 14's `full_stack_demo_tvl` matrix row
 
 **Steps — `erc4626-precondition` job (matrix over exit_fee_bps: [0, 30, 100]):**
 1. Checkout repository (recursive submodules)
 2. Install Foundry toolchain
 3. `forge test --match-contract ERC4626PreconditionChecks --fuzz-runs 256 -vv` with `EXIT_FEE_BPS` env var set to the matrix value
 4. Repeat for each exit-fee tier in parallel
-
-**Steps — `demo-tvl` job:**
-1. Checkout repository (recursive submodules)
-2. Verify Docker is available
-3. Install Rust toolchain (stable)
-4. Install Foundry toolchain
-5. Install Bun (needed by DappStack dapp-build step)
-6. Rust cache via `Swatinem/rust-cache@v2` pointing to `testing/smoke-test -> target`
-7. `cargo build -p smoke-test` (smoke-test crate)
-8. `cargo test -p smoke-test --release --test full_stack_demo_tvl -- --test-threads=1 --nocapture` — boots devnet, deploys contracts, seeds demo depositors, asserts four-vault end state, then tears down
-9. Safety-net teardown: `docker compose down -v --remove-orphans || true` (always runs, even on failure)
 
 ---
 
@@ -1107,7 +1151,9 @@ above and with `cli_meta`'s own header, which already documents ~13-minute
 CI chain-container readiness (issue #988) rather than the 60-120s the boot
 log message claims. Because the devnet matrix runs in parallel (one runner
 per binary), adding four more rows does not change suite 14's total
-wall-clock — it stays bounded by `full_stack_demo_tvl`'s ~46 min — but it
+wall-clock — it stayed bounded by `full_stack_demo_tvl`'s ~46 min (issue #1371
+has since halved that row to a single devnet bring-up, ~24 min, making
+`cli_meta` at ~25 min the new bound) — but it
 does add roughly four more `fixture_meta`-sized runners (~17-18 min each) to
 every PR against `dev`, since suite 14 is a HEAVY-tier gate with no path
 filter (unlike suite 5, which skips drafts). That runner-minute cost is the
@@ -1305,7 +1351,7 @@ Every workflow's `name:` and its tier.
 | `natspec-coverage` | quick | |
 | `secrets-scan` | quick | gitleaks secrets scan on every PR (security-model.md §13); pinned binary + `.gitleaks.toml` |
 | `security-gates` | quick | cargo-audit (Rust), bun-audit (JS/TS), CSP strict-mode gate; allow-list for pre-existing sub-critical advisories with dated expiry (issues #804, #813, #835) |
-| `erc4626-demo-tvl-matrix` | heavy | ERC-4626 precondition matrix (anvil, shard by exit-fee tier) + full-stack demo-TVL test (devnet, 25–35 min); gates PRs into `dev` (issue #804/#814) |
+| `erc4626-demo-tvl-matrix` | heavy | ERC-4626 precondition matrix (anvil, shard by exit-fee tier); gates PRs into `dev` (issue #814). Its `demo-tvl` devnet job was removed in issue #1371 — that binary runs once, as suite 14's `full_stack_demo_tvl` row |
 | `watchdog-rate-monitor` | quick | mint/burn rate watchdog unit + integration tests (issue #658, security-model.md §9); `watchdog-integration` also runs `cursor_and_volume` — the cursor-staleness and deposit-volume-anomaly suite, dark until issue #1282. **CI taxonomy (issue #1384):** `watchdog-unit` is `feature-correctness` and runs on draft PRs; `watchdog-integration` is `system-correctness` and is `if:`-gated to `draft == false`, so it first reports at `ready_for_review` (the `pull_request` trigger carries `ready_for_review`). Both jobs carry `paths-ignore: ['**.md','**.txt']`, so a docs-only PR gets neither check |
 | `opencode-headless-deposit-read` | nightly | `deposit`/`read` replay coverage (issue #1210 option C, closes #1233): a scripted replay of the fixed rmpc command sequence runs against a live devnet in place of a live model; keyless `asserter-tests` runs on PRs too and validates the asserter/guard/replay code |
 | `nightly-full-suite` | nightly | schedule-only (02:00 UTC) + workflow_dispatch; dispatches all suites against dev HEAD |
@@ -1355,7 +1401,7 @@ PKG_ENV_NAMES pin (`install-rmpc-selftest.sh:1402-1409`) needs updating too.
 | 14 | `smoke-test.yml` | `smoke-test` | `devnet` |
 | 18 | `suite-18-secrets-scan.yml` | `secrets-scan` (gitleaks) | `none` |
 | 18b | `suite-18-security-gates.yml` | `cargo-audit` \| `bun-audit` \| `csp-gate` \| `audit-ledger` \| `seam-map-drift` \| `seam-map-validator` \| `release-workflow-authority-audit` | `none` |
-| 19 | `suite-19-erc4626-demo-tvl-matrix.yml` | `erc4626-precondition` (matrix) \| `demo-tvl` | `anvil` / `devnet` |
+| 19 | `suite-19-erc4626-demo-tvl-matrix.yml` | `erc4626-precondition` (matrix) | `anvil` |
 | 20 | `suite-20-watchdog.yml` | `watchdog-unit` \| `watchdog-integration` | `none` / `postgres-testcontainer` |
 | 21 | `suite-21-nightly.yml` | `dispatch-all-suites` | `none` |
 | 22 | `suite-22-formal-verification.yml` | `forge-formal-verification` | `none` |
