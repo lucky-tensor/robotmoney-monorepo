@@ -57,8 +57,15 @@ build-time values stand. Any other failure (a bad status, an unparseable JSON
 document, a non-object payload) renders a visible error instead of a
 half-configured app.
 
-`VITE_FAUCET_HARNESS_PRIVATE_KEY` and `VITE_HISTORY_PANE` are deliberately
-build-time-only and are ignored if present in `/config.json`.
+`VITE_FAUCET_HARNESS_PRIVATE_KEY`, `VITE_HISTORY_PANE` and
+`VITE_GATEWAY_EXPECTED_CODE_HASH` are deliberately build-time-only and are
+ignored if present in `/config.json`. The code-hash pin is there because it is
+a verification pin rather than deployment plumbing: it decides whether admin
+writes against the runtime-supplied gateway address are enabled, so it has to
+live inside whatever attests the bundle (issue #1375). Since the gateway's
+immutables are part of its runtime bytecode, that hash is deployment-specific —
+an image that is to enable admin writes must be built for its deployment, and
+one built without a pin fails closed.
 
 
 | Var                               | Default                 | Purpose                                                                                       |

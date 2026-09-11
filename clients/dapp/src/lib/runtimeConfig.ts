@@ -29,10 +29,11 @@
  *
  * ## Security — why the overlay is a strict allowlist
  *
- * `/config.json` is world-readable by anyone who can load the dapp, and it
- * is attacker-visible in a way a compiled bundle constant is not. Only the
- * keys in `RUNTIME_CONFIG_KEYS` are ever taken from it. Two exclusions are
- * load-bearing rather than incidental:
+ * `/config.json` is world-readable by anyone who can load the dapp, it is
+ * separately mutable from the bundle, and it is attacker-visible in a way a
+ * compiled bundle constant is not. Only the keys in `RUNTIME_CONFIG_KEYS`
+ * are ever taken from it. Three exclusions are load-bearing rather than
+ * incidental:
  *
  *   - `VITE_FAUCET_HARNESS_PRIVATE_KEY` stays build-time-only. Serving a
  *     private key from a fetched document would publish it to every
@@ -42,6 +43,32 @@
  *   - `VITE_HISTORY_PANE` stays build+ADR-only. `featureFlags.ts` documents
  *     that flipping it must require a rebuild and an ADR, so no runtime
  *     toggle path is offered.
+ *   - `VITE_GATEWAY_EXPECTED_CODE_HASH` stays build-time-only (issue #1375).
+ *     It briefly rode along with the deployment-shaped keys when #1356
+ *     introduced this module, which was a mistake: it is not deployment
+ *     plumbing but a *verification pin*. `gatewayVerifier.ts` refuses every
+ *     admin write unless `keccak256(getBytecode(gateway))` equals it, so it
+ *     is the value that decides whether the other, runtime-supplied values
+ *     may be written to at all. Two reasons it must live in the bundle:
+ *
+ *       1. A pin is worth exactly what the artifact carrying it is worth.
+ *          `docs/architecture.md` §10 makes release provenance a
+ *          prerequisite for public mainnet use; the moment the bundle is
+ *          attested, a pin fetched from `/config.json` would be the one
+ *          value the attestation did not cover — an attested bundle taking
+ *          its trust anchor from an unattested document served by the same
+ *          origin. (Today the dapp image carries no attestation, so nothing
+ *          is weakened at present; this keeps the pin inside the artifact
+ *          before provenance makes the gap real.)
+ *       2. It could not be an environment-agnostic value anyway. The
+ *          gateway's `usdcToken`, `vaultContract`, and `routerContract` are
+ *          `immutable`, so they are baked into its *runtime* code and the
+ *          hash differs per deployment. A one-image-many-environments build
+ *          has no correct hash to pin — which is the honest consequence of
+ *          this decision: a bundle that is to enable admin writes must be
+ *          built for its deployment. One built without a pin fails closed
+ *          (`computeVerificationState` refuses on an empty hash) rather than
+ *          accepting one from a runtime document.
  *
  * Keys outside the allowlist are dropped with a warning rather than merged,
  * so a mistaken or hostile `/config.json` cannot reach either surface.
@@ -58,8 +85,10 @@ export type RuntimeConfig = Readonly<Record<string, string | undefined>>;
 
 /**
  * The only keys the fetched document may supply. Anything else — including
- * the two by-design build-time-only variables — is ignored. See the security
- * note in the module doc before adding to this list.
+ * the three by-design build-time-only variables — is ignored. Every entry
+ * below is deployment plumbing: an address or endpoint the dapp talks to,
+ * never a value that decides whether talking to it is safe. Read the
+ * security note in the module doc before adding to this list.
  */
 export const RUNTIME_CONFIG_KEYS = [
   "VITE_GATEWAY_ADDRESS",
@@ -69,7 +98,6 @@ export const RUNTIME_CONFIG_KEYS = [
   "VITE_GOVERNANCE_ADDRESS",
   "VITE_TIMELOCK_ADDRESS",
   "VITE_RM_TOKEN_ADDRESS",
-  "VITE_GATEWAY_EXPECTED_CODE_HASH",
   "VITE_ENV_CLASS",
   "VITE_VAULT_ADDRESSES",
   "VITE_DEVNET_RPC_URL",
@@ -177,8 +205,8 @@ export function parseRuntimeConfig(payload: unknown): RuntimeConfig {
     // already discarded by the time we get here.
     console.warn(
       `${RUNTIME_CONFIG_URL}: ignoring key(s) outside the runtime allowlist: ${rejected.join(", ")}. ` +
-        "Build-time-only variables (the faucet harness key, the history-pane flag) " +
-        "are never read from the runtime config by design.",
+        "Build-time-only variables (the faucet harness key, the history-pane flag, " +
+        "the gateway expected-code-hash pin) are never read from the runtime config by design.",
     );
   }
 
