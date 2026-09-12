@@ -26,8 +26,8 @@ mod common;
 use alloy_primitives::U256;
 use common::{pg_fixture, raw_pg};
 use explorer_indexer::db::{
-    assert_migrations_are_transactional, embedded_schema_version, first_non_transactional,
-    CountTable, DbError,
+    assert_migrations_are_transactional, compare_schema, embedded_schema_version,
+    first_non_transactional, AppliedMigration, CountTable, DbError, SchemaDivergence,
 };
 use explorer_indexer::Db;
 use sqlx::migrate::{Migration, MigrationType};
@@ -277,14 +277,22 @@ async fn boot_refuses_a_stale_schema_and_names_both_versions() {
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // Issue #1429 reshaped this message: rolling the database back one migration
+    // is now reported as the specific shape `MissingVersion`, naming the
+    // migration that is absent rather than only the two maxima.
     assert!(
-        stderr.contains("schema version mismatch"),
+        stderr.contains("not applied"),
         "the refusal must say what is wrong.\n{report}"
     );
     assert!(
         stderr.contains(&embedded.to_string()) && stderr.contains(&applied.to_string()),
         "the refusal must name BOTH the embedded version ({embedded}) and the \
          applied version ({applied}) so an operator can act on it.\n{report}"
+    );
+    assert!(
+        stderr.contains(&format!("migration {embedded}")),
+        "the refusal must name the migration that is missing, not only the two \
+         maxima (issue #1429).\n{report}"
     );
 
     assert_eq!(
@@ -331,12 +339,15 @@ async fn boot_accepts_a_matching_schema_and_starts_indexing() {
     let report = describe(&out);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !stderr.contains("schema version mismatch"),
+        !stderr.contains("refuses to run against a schema it does not match"),
         "a matching schema must NOT be refused — the check false-positived.\n{report}"
     );
     assert!(
-        stderr.contains("schema version matches embedded migrations"),
-        "the boot check must log the version it agreed on.\n{report}"
+        stderr.contains("applied migration set matches the embedded one"),
+        "the boot check must log the version it agreed on. Issue #1429 also \
+         narrowed this line's claim: it used to say the schema \"matches\" on the \
+         strength of a maxima comparison that could not see a checksum \
+         divergence.\n{report}"
     );
     assert!(
         out.status.success(),
@@ -606,4 +617,441 @@ async fn every_row_has_chain_id_and_block_number() {
         .unwrap();
         assert_eq!(row.0, 1, "{t} must have a block_number column");
     }
+}
+
+// ─── Issue #1429: the boot guard compares the SET, not two maxima ─────────────
+//
+// #1392's guard compared `MAX(version)` from `_sqlx_migrations` against the
+// highest embedded version and ignored checksums. Two genuinely divergent
+// schemas therefore passed it *and were announced as a match*:
+//
+//   1. a migration edited in place after being applied — content changes, version
+//      does not, so both maxima are identical;
+//   2. a row deleted from `_sqlx_migrations` BELOW the maximum — the maximum is
+//      untouched;
+//   3. an applied version this binary does not embed, below the maximum — a
+//      migration file removed from the repo.
+//
+// Each of the three tests below therefore has a property the #1392 tests did not:
+// it leaves `MAX(version)` on both sides EQUAL. That is what makes them red
+// against the old guard rather than merely red against a missing one, and it is
+// why they cannot be satisfied by any comparison of maxima.
+//
+// All three drive the compiled binary against a real database, like the #1392
+// boot tests, because the claim is about what the process does at boot — not
+// what a library function returns.
+
+/// Overwrite one applied migration's recorded checksum.
+///
+/// This is the faithful mirror of editing an already-applied migration file. The
+/// divergence the guard sees is "applied checksum != embedded checksum" for a
+/// version present on both sides; whether that arose because the file changed
+/// after being applied (the real deployment mistake) or because the row was
+/// altered is not, and cannot be, distinguishable from the database. Perturbing
+/// the row is the direction reachable from a test, since the embedded set is
+/// fixed at compile time.
+async fn corrupt_applied_checksum(db: &Db, version: i64) {
+    let rows =
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = decode($1, 'hex') WHERE version = $2")
+            .bind("deadbeef")
+            .bind(version)
+            .execute(db.pool())
+            .await
+            .expect("perturb the recorded checksum")
+            .rows_affected();
+    assert_eq!(
+        rows, 1,
+        "setup: expected to perturb exactly one _sqlx_migrations row for version {version}"
+    );
+}
+
+/// Insert a `_sqlx_migrations` row for a version this binary does not embed.
+async fn record_unembedded_migration(db: &Db, version: i64, description: &str) {
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations \
+         (version, description, installed_on, success, checksum, execution_time) \
+         VALUES ($1, $2, now(), true, decode('00', 'hex'), 0)",
+    )
+    .bind(version)
+    .bind(description)
+    .execute(db.pool())
+    .await
+    .expect("record an unembedded migration");
+}
+
+/// Assert the binary refused at boot, and that the refusal reached the operator
+/// and stopped short of any indexing.
+fn assert_refused(out: &Output, report: &str) {
+    assert!(
+        !out.status.success(),
+        "boot must FAIL, not proceed against a divergent schema.\n{report}"
+    );
+    assert!(
+        out.status.code().is_some(),
+        "boot must exit with a status code, not hang or die by signal.\n{report}"
+    );
+}
+
+/// Issue #1429 AC — a migration edited in place after being applied is refused,
+/// naming the version and that its checksum diverged.
+///
+/// `MAX(version)` is identical on both sides throughout, so #1392's guard
+/// reported this as a match and then failed every tick on the schema it had just
+/// approved. That is the silent-loop symptom #1392 existed to remove, announced
+/// as success.
+#[tokio::test]
+async fn boot_refuses_a_migration_edited_in_place_naming_the_checksum() {
+    let pg = raw_pg().await;
+
+    let out = run_migrate_only(&pg.url);
+    assert!(
+        out.status.success(),
+        "setup: migrate-only must succeed first.\n{}",
+        describe(&out)
+    );
+
+    let db = Db::connect(&pg.url)
+        .await
+        .expect("connect to the migrated database");
+    let embedded = embedded_schema_version();
+
+    corrupt_applied_checksum(&db, embedded).await;
+
+    // The whole point of this case: the maxima still agree.
+    assert_eq!(
+        db.applied_schema_version().await.unwrap(),
+        Some(embedded),
+        "setup: MAX(version) must still MATCH — that is what made #1392's guard \
+         approve this schema"
+    );
+
+    let out = run_boot(&pg.url);
+    let report = describe(&out);
+    assert_refused(&out, &report);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("checksum"),
+        "the refusal must say the CHECKSUM diverged, not merely that something is \
+         wrong — the remedy for an edited migration differs from the remedy for a \
+         stale one.\n{report}"
+    );
+    assert!(
+        stderr.contains(&embedded.to_string()),
+        "the refusal must name the diverging version ({embedded}).\n{report}"
+    );
+    assert_eq!(
+        indexer_run_count(&db).await,
+        0,
+        "a refused boot must not have started indexing.\n{report}"
+    );
+}
+
+/// Issue #1429 AC — a row deleted from `_sqlx_migrations` below the maximum is
+/// refused, naming the missing version.
+///
+/// This is the case a comparison of maxima cannot see even in principle: the
+/// newest migration is still recorded, so `MAX(version)` matches while a
+/// migration in the middle of the set was never applied (or was un-recorded by
+/// hand).
+#[tokio::test]
+async fn boot_refuses_a_row_deleted_below_the_maximum_naming_the_missing_version() {
+    let pg = raw_pg().await;
+
+    let out = run_migrate_only(&pg.url);
+    assert!(
+        out.status.success(),
+        "setup: migrate-only must succeed first.\n{}",
+        describe(&out)
+    );
+
+    let db = Db::connect(&pg.url)
+        .await
+        .expect("connect to the migrated database");
+    let embedded = embedded_schema_version();
+
+    // Pick a version strictly below the maximum so the maximum is untouched.
+    let missing = 7i64;
+    assert!(
+        missing < embedded,
+        "setup: the deleted version must be BELOW the maximum for this test to \
+         mean anything (embedded max is {embedded})"
+    );
+    let rows = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+        .bind(missing)
+        .execute(db.pool())
+        .await
+        .expect("un-record a migration below the maximum")
+        .rows_affected();
+    assert_eq!(rows, 1, "setup: expected to delete exactly one row");
+
+    assert_eq!(
+        db.applied_schema_version().await.unwrap(),
+        Some(embedded),
+        "setup: MAX(version) must still MATCH — that is what made #1392's guard \
+         approve this schema"
+    );
+
+    let out = run_boot(&pg.url);
+    let report = describe(&out);
+    assert_refused(&out, &report);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("migration {missing}")),
+        "the refusal must name the MISSING version ({missing}), not just report a \
+         mismatch.\n{report}"
+    );
+    assert!(
+        stderr.contains("not applied"),
+        "the refusal must say the migration is not applied.\n{report}"
+    );
+    assert_eq!(
+        indexer_run_count(&db).await,
+        0,
+        "a refused boot must not have started indexing.\n{report}"
+    );
+}
+
+/// Issue #1429 AC — an applied version with no embedded counterpart is refused
+/// with a message that says so, rather than being reported as a match.
+///
+/// Version 0 is used deliberately. The embedded set is contiguous (0001..NNNN),
+/// so version 0 is the only version that is both absent from the embedded set
+/// and low enough to leave `MAX(version)` unchanged — and leaving the maximum
+/// unchanged is the entire point, since that is the state #1392's guard called a
+/// match. It stands for a migration file deleted from the repo while still
+/// applied to a long-lived database.
+#[tokio::test]
+async fn boot_refuses_an_applied_version_this_binary_does_not_embed() {
+    let pg = raw_pg().await;
+
+    let out = run_migrate_only(&pg.url);
+    assert!(
+        out.status.success(),
+        "setup: migrate-only must succeed first.\n{}",
+        describe(&out)
+    );
+
+    let db = Db::connect(&pg.url)
+        .await
+        .expect("connect to the migrated database");
+    let embedded = embedded_schema_version();
+
+    record_unembedded_migration(&db, 0, "deleted_from_the_repo").await;
+
+    assert_eq!(
+        db.applied_schema_version().await.unwrap(),
+        Some(embedded),
+        "setup: MAX(version) must still MATCH — that is what made #1392's guard \
+         approve this schema"
+    );
+
+    let out = run_boot(&pg.url);
+    let report = describe(&out);
+    assert_refused(&out, &report);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("does not embed"),
+        "the refusal must say the binary does not embed the applied migration, \
+         rather than reporting a match.\n{report}"
+    );
+    assert!(
+        stderr.contains("migration 0"),
+        "the refusal must name the offending applied version.\n{report}"
+    );
+    assert_eq!(
+        indexer_run_count(&db).await,
+        0,
+        "a refused boot must not have started indexing.\n{report}"
+    );
+}
+
+/// Issue #1429 — a rollback to an older binary is refused with advice that fits
+/// it: the schema is AHEAD, so `--migrate-only` is not the remedy.
+///
+/// #1392's guard did refuse this (the maxima differ), but its only message told
+/// the operator to run `--migrate-only`, which cannot move a schema backwards.
+/// Naming the shape is the deliverable, not merely refusing.
+#[tokio::test]
+async fn boot_refuses_a_rollback_without_advising_migrate_only() {
+    let pg = raw_pg().await;
+
+    let out = run_migrate_only(&pg.url);
+    assert!(
+        out.status.success(),
+        "setup: migrate-only must succeed first.\n{}",
+        describe(&out)
+    );
+
+    let db = Db::connect(&pg.url)
+        .await
+        .expect("connect to the migrated database");
+    let embedded = embedded_schema_version();
+    let ahead = embedded + 1;
+
+    record_unembedded_migration(&db, ahead, "applied_by_a_newer_binary").await;
+
+    let out = run_boot(&pg.url);
+    let report = describe(&out);
+    assert_refused(&out, &report);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("migration {ahead}")),
+        "the refusal must name the version the database is ahead by.\n{report}"
+    );
+    assert!(
+        stderr.contains("newer binary"),
+        "the refusal must identify this as a rollback, not a stale schema.\n{report}"
+    );
+    assert!(
+        !stderr.contains("Run `indexer --migrate-only`"),
+        "a schema that is AHEAD cannot be fixed by migrating forward, so the \
+         refusal must not advise it.\n{report}"
+    );
+    assert_eq!(
+        indexer_run_count(&db).await,
+        0,
+        "a refused boot must not have started indexing.\n{report}"
+    );
+}
+
+// ─── Issue #1429: compare_schema without a database ──────────────────────────
+//
+// The comparison takes both sides as slices for the same reason
+// `first_non_transactional` does (#1392): the shapes can be driven from
+// synthetic inputs, so the database-backed tests above only have to prove the
+// two halves are wired together. It is also a free function rather than a method
+// because `explorer-api` needs the identical check (#1430) and must not grow a
+// second, independently-drifting copy.
+
+/// Two embedded migrations with real checksums, derived from their SQL by
+/// `Migration::new` exactly as `sqlx::migrate!` does.
+fn synthetic_embedded() -> Vec<Migration> {
+    vec![
+        Migration::new(
+            1,
+            Cow::Borrowed("first"),
+            MigrationType::Simple,
+            Cow::Borrowed("CREATE TABLE a (id BIGINT PRIMARY KEY);"),
+            false,
+        ),
+        Migration::new(
+            2,
+            Cow::Borrowed("second"),
+            MigrationType::Simple,
+            Cow::Borrowed("CREATE TABLE b (id BIGINT PRIMARY KEY);"),
+            false,
+        ),
+    ]
+}
+
+fn applied_from(embedded: &[Migration]) -> Vec<AppliedMigration> {
+    embedded
+        .iter()
+        .map(|m| AppliedMigration {
+            version: m.version,
+            checksum: m.checksum.to_vec(),
+        })
+        .collect()
+}
+
+#[test]
+fn compare_schema_accepts_an_identical_set() {
+    let embedded = synthetic_embedded();
+    let applied = applied_from(&embedded);
+    assert_eq!(compare_schema(&applied, &embedded), Ok(2));
+}
+
+#[test]
+fn compare_schema_rejects_an_empty_database() {
+    let embedded = synthetic_embedded();
+    assert_eq!(
+        compare_schema(&[], &embedded),
+        Err(SchemaDivergence::NeverMigrated { embedded: 2 })
+    );
+}
+
+#[test]
+fn compare_schema_rejects_a_changed_checksum_while_the_maxima_agree() {
+    let embedded = synthetic_embedded();
+    let mut applied = applied_from(&embedded);
+    applied[0].checksum = vec![0xde, 0xad, 0xbe, 0xef];
+
+    // The maxima are equal, so a maxima-only comparison would accept this.
+    assert_eq!(
+        applied.iter().map(|a| a.version).max(),
+        embedded.iter().map(|m| m.version).max()
+    );
+
+    let err = compare_schema(&applied, &embedded).expect_err("must be rejected");
+    assert_eq!(
+        err,
+        SchemaDivergence::ChecksumMismatch {
+            version: 1,
+            description: "first".to_string(),
+        }
+    );
+    assert!(
+        err.to_string().contains("edited in place"),
+        "the message must name the mistake: {err}"
+    );
+}
+
+#[test]
+fn compare_schema_rejects_a_missing_version_below_the_maximum() {
+    let embedded = synthetic_embedded();
+    let applied: Vec<AppliedMigration> = applied_from(&embedded)
+        .into_iter()
+        .filter(|a| a.version != 1)
+        .collect();
+
+    let err = compare_schema(&applied, &embedded).expect_err("must be rejected");
+    assert_eq!(
+        err,
+        SchemaDivergence::MissingVersion {
+            version: 1,
+            description: "first".to_string(),
+            applied_max: 2,
+            embedded: 2,
+        }
+    );
+}
+
+#[test]
+fn compare_schema_rejects_an_applied_version_with_no_embedded_counterpart() {
+    let embedded = synthetic_embedded();
+    let mut applied = applied_from(&embedded);
+    applied.push(AppliedMigration {
+        version: 3,
+        checksum: vec![0x00],
+    });
+
+    assert_eq!(
+        compare_schema(&applied, &embedded),
+        Err(SchemaDivergence::UnknownAppliedVersion {
+            version: 3,
+            embedded: 2,
+        })
+    );
+}
+
+/// The refusal names the FIRST divergence, so the message points at the earliest
+/// point the two schemas parted company rather than an arbitrary one.
+#[test]
+fn compare_schema_reports_the_lowest_versioned_divergence_first() {
+    let embedded = synthetic_embedded();
+    let mut applied = applied_from(&embedded);
+    // Two divergences at once: version 1's checksum changed, version 2 missing.
+    applied[0].checksum = vec![0xde, 0xad];
+    applied.retain(|a| a.version != 2);
+
+    let err = compare_schema(&applied, &embedded).expect_err("must be rejected");
+    assert_eq!(
+        err.version(),
+        1,
+        "the lowest-versioned divergence must be the one reported: {err}"
+    );
 }

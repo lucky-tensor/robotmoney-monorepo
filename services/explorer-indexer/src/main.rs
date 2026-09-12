@@ -172,15 +172,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             // Emit the operator-facing message and exit non-zero. Returning the
             // error from `main` would print its *Debug* form instead —
-            // `SchemaVersionMismatch { embedded: 15, applied: "14" }` — which
-            // names the versions but not what to do about them.
+            // `SchemaDivergent(ChecksumMismatch { version: 15, .. })` — which
+            // names the divergence but not what to do about it.
             error!("{e}");
             std::process::exit(1);
         }
     };
+    // Issue #1429: this line used to claim a match the guard had not checked —
+    // it compared maxima only, so an edited-in-place migration or a row deleted
+    // below the maximum was announced here as a match and then failed every
+    // tick. It now reports what `compare_schema` actually established.
     info!(
         schema_version,
-        "schema version matches embedded migrations; starting indexer"
+        "applied migration set matches the embedded one (version and checksum); \
+         starting indexer"
     );
 
     // clap enforces these three via `required_unless_present = "migrate_only"`,

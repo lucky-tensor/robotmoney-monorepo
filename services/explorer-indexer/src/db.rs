@@ -34,20 +34,18 @@ pub enum DbError {
          ({0:?}, \"<reason>\") to db::REORG_ROLLBACK_EXCLUSIONS."
     )]
     UnscopedBlockTable(String),
-    /// Issue #1392. The boot path deliberately does **not** migrate (#1359), so
-    /// a database whose applied schema version differs from the version this
-    /// binary embeds is refused at boot instead of served. Before this existed,
-    /// an indexer pointed at a stale schema just looped, failing every tick with
-    /// no healthcheck to notice.
-    #[error(
-        "schema version mismatch: this binary embeds explorer migrations up to \
-         version {embedded}, but the database has applied up to version {applied}. \
-         The indexer never migrates on boot (issue #1359), so it refuses to run \
-         against a schema it does not match (issue #1392). Run \
-         `indexer --migrate-only` against this DATABASE_URL to bring the schema to \
-         version {embedded}, or deploy the binary that matches the database."
-    )]
-    SchemaVersionMismatch { embedded: i64, applied: String },
+    /// Issue #1392, narrowed by #1429. The boot path deliberately does **not**
+    /// migrate (#1359), so a database whose applied migration set differs from
+    /// the set this binary embeds is refused at boot instead of served. Before
+    /// this existed, an indexer pointed at a stale schema just looped, failing
+    /// every tick with no healthcheck to notice.
+    ///
+    /// The message comes from [`SchemaDivergence`], which names *which* of the
+    /// four disagreement shapes this is — the remedies differ, and #1429 was
+    /// filed because a single "version mismatch" message could not express an
+    /// in-place edit or a rollback at all.
+    #[error(transparent)]
+    SchemaDivergent(#[from] SchemaDivergence),
     /// Issue #1392. An embedded migration opted out of its transaction with
     /// `-- no-transaction`, so a failure part-way through it would leave a
     /// half-applied schema behind — the property
@@ -72,10 +70,206 @@ pub struct Db {
 /// (which does not call sqlx-cli) can still apply schema.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// One way the database's applied schema disagrees with the migration set this
+/// binary embeds.
+///
+/// Issue #1429. The original guard (#1392) compared two **maxima** —
+/// `MAX(version)` from `_sqlx_migrations` against the highest embedded version —
+/// and ignored checksums, so two genuinely divergent schemas passed it: a
+/// migration edited in place after being applied (content changes, version does
+/// not), and rows hand-deleted from `_sqlx_migrations` *below* the maximum.
+/// Both then produced exactly the silent tick-failure loop #1392 was opened to
+/// eliminate, except announced as a match.
+///
+/// The data needed was already in the table the guard read: `_sqlx_migrations`
+/// stores a per-version checksum, and `MIGRATOR.run` performs this same
+/// comparison — which is why the compose stack's `explorer-migrate` step does
+/// catch this. The residual exposure was precisely the **skipped-migrate-step**
+/// case this boot guard exists to be the last line of defence against.
+///
+/// Each variant names one shape so the operator is told which mistake this is;
+/// "your schema is wrong" does not distinguish a rollback from an edit.
+///
+/// # Match on the variant; do not print `Display` from another context
+///
+/// The messages are written for the **indexer boot path** and name its remedies
+/// — `MissingVersion` says to run `indexer --migrate-only` against this
+/// `DATABASE_URL`, `UnknownAppliedVersion` says to deploy a matching binary.
+/// Those instructions are wrong anywhere else. A second caller comparing a
+/// different pair of realities — the on-disk `migrations/` directory against the
+/// embedded set, say — gets the right *classification* from [`compare_schema`]
+/// but must render its own text from the variant, because its remedy is
+/// "regenerate the embedded set", not "migrate the database".
+///
+/// That is why this is a public enum with public fields rather than an opaque
+/// error: matching on it is the intended use, and `{e}` from a non-boot caller
+/// is the misuse.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SchemaDivergence {
+    /// `_sqlx_migrations` is absent or empty — nothing has ever been migrated.
+    #[error(
+        "the database has no applied migrations at all (`_sqlx_migrations` is \
+         absent or empty), but this binary embeds explorer migrations up to \
+         version {embedded}. The indexer never migrates on boot (issue #1359), \
+         so it refuses to run against a schema it does not match (issue #1392). \
+         Run `indexer --migrate-only` against this DATABASE_URL."
+    )]
+    NeverMigrated { embedded: i64 },
+
+    /// Embedded here, never applied there. The ordinary stale-database case,
+    /// and also what a row deleted from `_sqlx_migrations` below the maximum
+    /// looks like — invisible to a comparison of maxima.
+    #[error(
+        "migration {version} ({description:?}) is embedded in this binary but is \
+         not applied to the database, which has applied up to version {applied_max} \
+         (this binary embeds up to {embedded}). The indexer never migrates on boot \
+         (issue #1359), so it refuses to run against a schema it does not match \
+         (issue #1392). Run `indexer --migrate-only` against this DATABASE_URL, or \
+         deploy the binary that matches the database."
+    )]
+    MissingVersion {
+        version: i64,
+        description: String,
+        applied_max: i64,
+        embedded: i64,
+    },
+
+    /// Same version on both sides, different content: a migration edited in
+    /// place after it had already been applied somewhere. `MAX(version)` is
+    /// identical on both sides, which is why the maxima comparison passed it.
+    #[error(
+        "migration {version} ({description:?}) is applied to the database, but its \
+         content has changed since: the applied checksum does not match the one \
+         embedded in this binary. An already-applied migration was edited in \
+         place, so the database's schema is not what this binary expects even \
+         though the version numbers agree. Do not edit an applied migration — add \
+         a new one. To recover, point this binary at a database migrated from the \
+         current files, or restore the migration file to the content that was \
+         applied."
+    )]
+    ChecksumMismatch { version: i64, description: String },
+
+    /// Applied there, absent here: the database was migrated by a *newer*
+    /// binary than this one, i.e. a rollback to an older image. Reported as
+    /// its own shape because "run --migrate-only" is the wrong advice for it.
+    #[error(
+        "migration {version} is applied to the database but this binary does not \
+         embed it (this binary embeds up to version {embedded}). The database was \
+         migrated by a newer binary than this one — this looks like a rollback to \
+         an older image, which `--migrate-only` will not fix because the schema is \
+         ahead, not behind. Deploy the binary that matches the database, or restore \
+         the database to a state this binary embeds."
+    )]
+    UnknownAppliedVersion { version: i64, embedded: i64 },
+}
+
+impl SchemaDivergence {
+    /// The migration version this divergence is about, used to report the
+    /// **first** (lowest-versioned) divergence rather than an arbitrary one.
+    pub fn version(&self) -> i64 {
+        match self {
+            SchemaDivergence::NeverMigrated { .. } => 0,
+            SchemaDivergence::MissingVersion { version, .. }
+            | SchemaDivergence::ChecksumMismatch { version, .. }
+            | SchemaDivergence::UnknownAppliedVersion { version, .. } => *version,
+        }
+    }
+}
+
+/// One row of `_sqlx_migrations`, reduced to what the boot guard compares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedMigration {
+    pub version: i64,
+    pub checksum: Vec<u8>,
+}
+
+/// Compare the applied migration **set** against the embedded one, returning
+/// the agreed highest version or the first divergence.
+///
+/// Issue #1429. Taking both sides as slices — rather than reading [`MIGRATOR`]
+/// and the pool directly — is what makes the comparison testable without a
+/// database, the same reasoning as [`first_non_transactional`] (#1392): the
+/// three refusal shapes can be driven from synthetic inputs, and the
+/// database-backed tests then only have to prove the two halves are wired
+/// together.
+///
+/// It is also why this is a free function over slices rather than a method:
+/// `explorer-api` needs the identical check (#1430) and must not grow a second,
+/// independently-drifting copy of it.
+///
+/// Divergences are reported lowest-version-first, so the message names the
+/// earliest point at which the two schemas parted company rather than an
+/// arbitrary one.
+pub fn compare_schema(
+    applied: &[AppliedMigration],
+    embedded: &[sqlx::migrate::Migration],
+) -> Result<i64, SchemaDivergence> {
+    let embedded_max = embedded
+        .iter()
+        .map(|m| m.version)
+        .max()
+        .expect("the embedded migrations directory is never empty");
+
+    if applied.is_empty() {
+        return Err(SchemaDivergence::NeverMigrated {
+            embedded: embedded_max,
+        });
+    }
+    let applied_max = applied
+        .iter()
+        .map(|m| m.version)
+        .max()
+        .expect("applied is non-empty");
+
+    let applied_by: std::collections::BTreeMap<i64, &[u8]> = applied
+        .iter()
+        .map(|a| (a.version, a.checksum.as_slice()))
+        .collect();
+
+    let mut divergences: Vec<SchemaDivergence> = Vec::new();
+
+    for m in embedded {
+        match applied_by.get(&m.version) {
+            None => divergences.push(SchemaDivergence::MissingVersion {
+                version: m.version,
+                description: m.description.to_string(),
+                applied_max,
+                embedded: embedded_max,
+            }),
+            Some(checksum) if *checksum != m.checksum.as_ref() => {
+                divergences.push(SchemaDivergence::ChecksumMismatch {
+                    version: m.version,
+                    description: m.description.to_string(),
+                })
+            }
+            Some(_) => {}
+        }
+    }
+
+    let embedded_versions: std::collections::BTreeSet<i64> =
+        embedded.iter().map(|m| m.version).collect();
+    for version in applied_by.keys() {
+        if !embedded_versions.contains(version) {
+            divergences.push(SchemaDivergence::UnknownAppliedVersion {
+                version: *version,
+                embedded: embedded_max,
+            });
+        }
+    }
+
+    divergences.sort_by_key(|d| d.version());
+    match divergences.into_iter().next() {
+        Some(d) => Err(d),
+        None => Ok(embedded_max),
+    }
+}
+
 /// Highest migration version compiled into this binary.
 ///
-/// Issue #1392: this is one half of the boot-time schema check — the other half
-/// is [`Db::applied_schema_version`], read from `_sqlx_migrations`.
+/// Issue #1392: one half of the original boot-time schema check. Superseded as
+/// the *guard* by [`compare_schema`] (#1429), which compares the whole
+/// version+checksum set rather than two maxima; this remains the value reported
+/// on success and in operator messages.
 pub fn embedded_schema_version() -> i64 {
     MIGRATOR
         .iter()
@@ -451,31 +645,46 @@ impl Db {
         Ok(applied)
     }
 
-    /// Refuse to proceed unless the database's applied schema version equals the
-    /// version embedded in this binary. Returns the agreed version on success.
+    /// Every row of `_sqlx_migrations`, or an empty vector when nothing has ever
+    /// been migrated here (the table does not exist, or is empty).
     ///
-    /// Issue #1392. Issue #1359 correctly stopped the indexer migrating on boot,
-    /// but auto-migration had been the only thing that made a schema mismatch
-    /// *fail*: without it, an indexer started against a stale schema loops
-    /// silently, and no healthcheck notices. This restores the loud failure
-    /// without restoring auto-migration — the indexer still never writes schema,
-    /// it just declines to run against one it does not match. The error names
-    /// both versions ([`DbError::SchemaVersionMismatch`]).
-    pub async fn assert_schema_matches_embedded(&self) -> Result<i64, DbError> {
-        let embedded = embedded_schema_version();
-        let applied = self.applied_schema_version().await?;
-        match applied {
-            Some(v) if v == embedded => Ok(embedded),
-            other => Err(DbError::SchemaVersionMismatch {
-                embedded,
-                applied: match other {
-                    Some(v) => v.to_string(),
-                    None => "none (_sqlx_migrations is absent or empty — the database \
-                         has never been migrated)"
-                        .to_string(),
-                },
-            }),
+    /// Issue #1429: the guard needs the applied **set**, not its maximum. The
+    /// existence probe is a separate statement for the same reason as in
+    /// [`Db::applied_schema_version`] — Postgres parses the whole query up
+    /// front, so selecting from `_sqlx_migrations` on a virgin database is a
+    /// 42P01 parse error, not an empty result.
+    pub async fn applied_migrations(&self) -> Result<Vec<AppliedMigration>, DbError> {
+        let table: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+                .fetch_one(&self.pool)
+                .await?;
+        if table.is_none() {
+            return Ok(Vec::new());
         }
+        let rows: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(version, checksum)| AppliedMigration { version, checksum })
+            .collect())
+    }
+
+    /// Refuse to proceed unless the database's applied migration set matches the
+    /// set this binary embeds, version **and** checksum. Returns the agreed
+    /// highest version on success.
+    ///
+    /// Issue #1392 established the guard; issue #1429 widened it from a
+    /// comparison of maxima to the full set. See [`compare_schema`] for the four
+    /// disagreement shapes and why each is named separately, and
+    /// [`SchemaDivergence`] for what the original comparison could not see.
+    ///
+    /// The indexer still never writes schema (#1359) — it declines to run
+    /// against one it does not match.
+    pub async fn assert_schema_matches_embedded(&self) -> Result<i64, DbError> {
+        let applied = self.applied_migrations().await?;
+        Ok(compare_schema(&applied, &MIGRATOR.migrations)?)
     }
 
     /// Idempotent insert for the `chains` row.
