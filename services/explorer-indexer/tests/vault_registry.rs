@@ -19,7 +19,13 @@
 //!    (reorg policy — AC-4 proxy; vaults rows are not block-keyed and
 //!    survive).
 //!
-//! All tests skip cleanly when Docker is not available.
+//! 5. `shipped_vault_names_get_their_intended_risk_label`: the names the
+//!    deploy scripts actually register are indexed with the risk_label the
+//!    PRD intends, including the two non-default basket labels (issue #1434).
+//!
+//! These tests assert on real schema and real SQL, so `pg_fixture` panics
+//! rather than skipping when Docker is unavailable — a skip here would be a
+//! silent false green (issue #1383).
 //!
 //! Canonical: docs/technical/vault-registry-decisions.md §3.5.
 
@@ -667,4 +673,117 @@ async fn reorg_deletes_snapshot_rows_but_preserves_vaults_rows() {
     );
 
     stub2.shutdown();
+}
+
+/// AC-5 (issue #1434): the names the deploy scripts actually register land on
+/// their intended `risk_label`, end to end through decode -> `upsert_vault`.
+///
+/// Before #1434 the derivation was an exact-match table keyed on an `"RM …"`
+/// spelling that no deploy script has ever used, so all three rows below came
+/// back `STABLE_YIELD` and the dapp's `CompositionSection` rendered the static
+/// `USDC -> rmUSDC` label on both basket vaults. The two non-default
+/// expectations here are the coverage that was missing: the pre-existing tests
+/// only ever asserted the default, so nothing failed while every branch was
+/// dead.
+#[tokio::test]
+async fn shipped_vault_names_get_their_intended_risk_label() {
+    let fx = pg_fixture().await;
+
+    let registry_addr = Address::from([0xEEu8; 20]);
+    let asset_addr = Address::from([0xDDu8; 20]);
+
+    // (vault address byte, registration name as spelled by contracts/script,
+    //  expected risk_label)
+    let cases: [(u8, &str, &str); 3] = [
+        // DeployProtocolAssetVault.s.sol:60 — VAULT_NAME
+        (0xA1, "Robot Money Protocol", "VOLATILE"),
+        // DeployAgentTokenVault.s.sol:215 — VaultMetadata.name
+        (0xA2, "Robot Money Agent Tokens", "SPECULATIVE"),
+        // DeployVaultRegistry.s.sol:44 — DEFAULT_VAULT_NAME
+        (0xA3, "Robot Money USDC", "STABLE_YIELD"),
+    ];
+
+    let logs: Vec<serde_json::Value> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (addr_byte, name, _))| {
+            encode_vault_registered_log(
+                registry_addr,
+                Address::from([*addr_byte; 20]),
+                name,
+                asset_addr,
+                50u64,
+                [0x11u8; 32],
+                i as u32,
+            )
+        })
+        .collect();
+
+    let stub = StubRpcServer::start().await;
+    stub.set("eth_blockNumber", serde_json::Value::String("0x46".into()));
+    stub.set("eth_getLogs", serde_json::Value::Array(logs));
+    stub.set(
+        "eth_call",
+        serde_json::Value::String(format!("0x{}", "00".repeat(32))),
+    );
+    stub.set("eth_getBlockByNumber", stub_block(65, 0xab, 0xaa));
+    stub.set(
+        "eth_getTransactionReceipt",
+        serde_json::json!({ "status": "0x1" }),
+    );
+
+    let rpc = JsonRpc::new(&stub.url);
+    let cfg = IndexerConfig {
+        chain_id: 8453,
+        chain_name: "base".into(),
+        rpc_label: "stub".into(),
+        gateway: Address::from([0xBBu8; 20]),
+        vault: Address::from([0xCCu8; 20]),
+        registry: Some(registry_addr),
+        router_governance: None,
+        portfolio_router: None,
+        investment_committee: None,
+        consensus_receipt: None,
+        max_blocks_per_tick: 200,
+        end_block: Some(65),
+        feature_flags: 4,
+    };
+
+    let outcome = run_once(&fx.db, &rpc, &cfg).await.unwrap();
+    assert!(
+        outcome.error.is_none(),
+        "tick must succeed: {:?}",
+        outcome.error
+    );
+
+    assert_eq!(
+        fx.db.count(CountTable::Vaults).await.unwrap(),
+        cases.len() as i64,
+        "every registration in the tick must have produced a vaults row"
+    );
+
+    for (addr_byte, name, expected_label) in cases {
+        let vault_addr = Address::from([addr_byte; 20]);
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT name, risk_label FROM vaults \
+             WHERE chain_id = $1 AND vault_address = $2",
+        )
+        .bind(8453i64)
+        .bind(vault_addr.as_slice())
+        .fetch_optional(fx.db.pool())
+        .await
+        .unwrap();
+
+        let (stored_name, stored_label) =
+            row.unwrap_or_else(|| panic!("vault row for {name} must exist"));
+        assert_eq!(stored_name, name, "stored name must round-trip");
+        assert_eq!(
+            stored_label, expected_label,
+            "{name} must be indexed as {expected_label}; got {stored_label}. A \
+             basket vault labelled STABLE_YIELD renders the static USDC \
+             composition in the dapp instead of its live shortlist()."
+        );
+    }
+
+    stub.shutdown();
 }
