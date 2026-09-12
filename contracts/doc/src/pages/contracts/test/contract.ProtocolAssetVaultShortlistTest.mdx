@@ -1,0 +1,136 @@
+---
+title: "ProtocolAssetVaultShortlistTest"
+description: "Issue #1364 — a deployed `ProtocolAssetVault` must answer `shortlist()` with its configured assets, in registry order, with live balances."
+---
+
+# ProtocolAssetVaultShortlistTest
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/0721b5607579ae8fe57f7d16428d23a62c533404/contracts/test/ProtocolAssetVaultShortlist.t.sol)
+
+**Inherits:** Test
+
+Issue #1364 — a deployed `ProtocolAssetVault` must answer `shortlist()`
+with its configured assets, in registry order, with live balances.
+
+The dapp's composition panel (`BasketShortlistPanel`) calls
+`shortlist()` on any vault whose risk label is VOLATILE.
+`ProtocolAssetVault`'s risk label IS VOLATILE
+(contracts/vaults/ProtocolAssetVault.sol NatSpec), so before #1364 the
+call reverted with no matching function and the panel fell into its
+`vault-detail-composition-error` branch.
+
+## Constants
+
+### ONE_USDC
+
+```solidity
+uint256 internal constant ONE_USDC = 1e6;
+```
+
+### POOL_FEE
+
+```solidity
+uint24 internal constant POOL_FEE = 3000;
+```
+
+## State Variables
+
+### usdc
+
+```solidity
+TestERC20 internal usdc;
+```
+
+### router
+
+```solidity
+ShortlistStubSwapRouter internal router;
+```
+
+### vault
+
+```solidity
+ProtocolAssetVault internal vault;
+```
+
+### tokens
+
+```solidity
+TestERC20[3] internal tokens;
+```
+
+### admin
+
+```solidity
+address internal admin = makeAddr("admin");
+```
+
+## Functions
+
+<a id="setup"></a>
+
+### setUp
+
+```solidity
+function setUp() public;
+```
+
+<a id="test_shortlist_iscallableonprotocolassetvault"></a>
+
+### test_shortlist_isCallableOnProtocolAssetVault
+
+The whole point of #1364: the selector exists and the call does not
+revert. A `ProtocolAssetVault` with no `shortlist()` reverts here,
+which is exactly what made the dapp panel render "unavailable".
+
+```solidity
+function test_shortlist_isCallableOnProtocolAssetVault() public view;
+```
+
+<a id="test_shortlist_returnsconfiguredassetsinorder"></a>
+
+### test_shortlist_returnsConfiguredAssetsInOrder
+
+All five parallel arrays are returned, equal-length and in registry
+order, with the configured token/pool/fee and the active flag set.
+The five-parallel-array shape (NOT a struct array) is the shape the
+dapp's BASKET_VAULT_SHORTLIST_ABI declares — scan finding DAPP-5.
+
+```solidity
+function test_shortlist_returnsConfiguredAssetsInOrder() public view;
+```
+
+<a id="test_shortlist_reportslivevaultbalances"></a>
+
+### test_shortlist_reportsLiveVaultBalances
+
+`balances` reads the vault's live ERC-20 balance per asset, so the
+dapp renders real numbers rather than zeros.
+
+```solidity
+function test_shortlist_reportsLiveVaultBalances() public;
+```
+
+<a id="test_shortlist_marksremovedassetinactive"></a>
+
+### test_shortlist_marksRemovedAssetInactive
+
+A removed asset stays in the shortlist with `active == false`, which
+is what the dapp renders as an "inactive" row.
+
+```solidity
+function test_shortlist_marksRemovedAssetInactive() public;
+```
+
+<a id="test_shortlist_emptybasketreturnsemptyarrays"></a>
+
+### test_shortlist_emptyBasketReturnsEmptyArrays
+
+An empty basket returns five empty arrays, NOT a revert. The dapp
+distinguishes this ("No basket assets.") from the failure branch
+("unavailable"), so the empty case must succeed.
+
+```solidity
+function test_shortlist_emptyBasketReturnsEmptyArrays() public;
+```
+
