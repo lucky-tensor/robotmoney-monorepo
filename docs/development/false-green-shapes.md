@@ -603,7 +603,17 @@ recursively, so additions, edits and deletions all mark the crate dirty.
 `services/explorer-indexer/tests/migration_set_parity.rs` is the guard on that
 mechanism: it compares the compile-time embedded set against the run-time
 contents of `migrations/`, so a regression in the rebuild trigger fails RED
-rather than shipping a stale binary. It needs no Postgres, Docker or network,
+rather than shipping a stale binary — but only for an **added, deleted or
+renamed** migration. It compares `version -> description`, not file contents,
+so an **in-place edit** of an existing migration (same filename, different SQL)
+is invisible to it, which is the shape a PR takes when an author fixes a
+migration they added earlier in the same PR. That gap is narrow today because
+the rebuild trigger does cover in-place edits and sqlx independently rejects a
+mutated already-applied migration via `_sqlx_migrations` checksum validation at
+boot; it would matter if the trigger itself regressed. Comparing the embedded
+`Migration::sql`/`checksum` against the file bytes would close it — issue
+#1429 tracks the same version-vs-checksum blind spot in the boot guard, and
+both want the same comparison. It needs no Postgres, Docker or network,
 and runs in `.github/workflows/suite-04-rust-quality.yml`'s `lint` job — a
 LIGHT suite with no draft gate — because a stale `target/` bites hardest
 during draft iteration. Nothing detects a _new_ instance of this shape in

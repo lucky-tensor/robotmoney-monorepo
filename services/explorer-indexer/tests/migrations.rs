@@ -365,12 +365,17 @@ async fn boot_accepts_a_matching_schema_and_starts_indexing() {
 // grep while still running inside a transaction, and a future sqlx spelling of
 // the opt-out would defeat a grep entirely.
 //
-// KNOWN LIMIT (issue #1416, filed from this work): on stable Rust `sqlx::migrate!`
-// registers no rerun-if-changed dependency on `migrations/`, and this crate has no
-// build.rs, so a change that touches ONLY a `.sql` file may not recompile the crate
-// against a warm target dir — the guard would then read a stale embedded set. That
-// is a build-freshness defect, not a hole in the guard, and it is tracked separately
-// rather than hidden here.
+// FORMER LIMIT (issue #1416, filed from this work, fixed in the same PR that
+// added this note's correction): on stable Rust `sqlx::migrate!` registers no
+// rerun-if-changed dependency on `migrations/`, so a change touching ONLY a
+// `.sql` file could fail to recompile the crate against a warm target dir, and
+// the guard would then read a stale embedded set. `services/explorer-indexer/
+// build.rs` now emits `cargo:rerun-if-changed=migrations`, which covers
+// additions, in-place edits and deletions, and
+// `tests/migration_set_parity.rs` guards that mechanism. Note the parity guard
+// compares `version -> description` rather than file contents, so it alone
+// would not catch an in-place edit — see the `stale-cache-embedded-artefact`
+// entry in docs/development/false-green-shapes.md and issue #1429.
 
 /// Every migration this binary embeds runs inside a transaction, so a migration
 /// that fails part-way rolls back whole.
