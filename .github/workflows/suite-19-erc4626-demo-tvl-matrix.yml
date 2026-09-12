@@ -1,24 +1,44 @@
 # Canonical: docs/development/ci-suites.md §19
 #
 # WHY THIS SUITE EXISTS
-# Two complementary test-matrix expansion concerns live here:
+# ERC-4626 PRECONDITION TESTS (activated — issue #814)
+# contracts/test/ERC4626PreconditionChecks.t.sol asserts asset()/decimals()
+# and empty-vault share-price invariants across the exitFeeBps × adapter matrix.
+# The matrix shards by exit-fee tier via the EXIT_FEE_BPS env var. Anvil only —
+# no Docker, no devnet.
 #
-# 1. ERC-4626 PRECONDITION TESTS (activated — issue #814)
-#    contracts/test/ERC4626PreconditionChecks.t.sol asserts asset()/decimals()
-#    and empty-vault share-price invariants across the exitFeeBps × adapter matrix.
-#    The matrix shards by exit-fee tier via the EXIT_FEE_BPS env var.
+# WHERE THE demo-tvl JOB WENT (issue #1371)
+# This suite used to carry a second job, `demo-tvl-full-stack`, whose only step
+# was `cargo test -p smoke-test --release --test full_stack_demo_tvl --
+# --test-threads=1 --nocapture`. That is the *identical* cargo invocation on the
+# *identical* test binary already run by the `full_stack_demo_tvl` row of
+# suite-14's devnet matrix (.github/workflows/suite-14-smoke-test.yml), under
+# identical triggers (`pull_request: branches: [dev]` + `push: [dev]`), so every
+# PR into dev paid for the same devnet bring-up twice. Measured on dev commit
+# 44299b40: demo-tvl-full-stack 45m51s (job 103087822627) alongside
+# smoke-test-devnet-full_stack_demo_tvl 46m56s (job 103087891903), both green,
+# both logging `test result: ok. 2 passed`.
 #
-# 2. DEMO-TVL MATRIX (activated — issue #804)
-#    The full_stack_demo_tvl smoke test
-#    (testing/smoke-test/tests/full_stack_demo_tvl.rs) is wired here.
-#    Runs HEAVY tier — it gates pull_requests targeting dev (and push to dev),
-#    not ordinary feature PRs. Uses oven-sh/setup-bun@v2 for the DappStack dapp-build step.
+# The suite-14 row is the one kept because it strictly dominates: it routes
+# through .github/scripts/cargo_test_require_executed.sh (so a zero-collected
+# run fails loudly instead of reporting a false green), pre-pulls the chain
+# images off the boot critical path, and uploads the smoke-test log artifact.
+# The job removed here had none of those. Host bun is NOT needed — the dapp
+# bundle is built inside docker-compose.dapp.yaml, which is why the suite-14 row
+# has always passed without oven-sh/setup-bun.
+#
+# The file name and workflow name keep the `demo-tvl` token on purpose: suite
+# numbering is referenced by path from .github/workflows/suite-21-nightly.yml's
+# dispatch list, docs/development/ci-suites.md §19, and
+# docs/technical/testcode-removal-seams.md §2.5. Renaming is churn with no
+# signal value; this comment and ci-suites.md §19 carry the truth instead.
 #
 # ACTIVATION HISTORY
 # - erc4626-precondition: activated in issue #814 — ERC4626PreconditionChecks.t.sol
 #   created and `if: false` removed.
 # - demo-tvl: activated in issue #804 — full_stack_demo_tvl.rs exists; bun runner
-#   dep resolved via oven-sh/setup-bun@v2.
+#   dep resolved via oven-sh/setup-bun@v2. Removed in issue #1371 as an exact
+#   duplicate of suite-14's `full_stack_demo_tvl` matrix row (see above).
 
 name: erc4626-demo-tvl-matrix
 
@@ -36,6 +56,16 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The suite is now a single forge-on-anvil job with no draft-exclusion `if:`, so
+# it runs on every PR to dev including drafts — the feature-correctness trigger
+# shape. Declared here (issue #1371) rather than left `undeclared`: removing the
+# `demo-tvl` job meant touching this file, and `ci lint` requires errors: 0 on a
+# touched workflow. The remaining `docs-only-should-skip` /
+# `sweep-missing-nightly` warnings belong to the repo-wide CI_CLASS backfill and
+# are explicitly out of scope for #1371.
+env:
+  CI_CLASS: feature-correctness
 
 jobs:
   # ── ERC-4626 precondition checks ───────────────────────────────────────────
@@ -67,40 +97,3 @@ jobs:
             --match-contract ERC4626PreconditionChecks \
             --fuzz-runs 256 \
             -vv
-
-  # ── Full-stack demo-TVL ────────────────────────────────────────────────────
-  # Runs the full_stack_demo_tvl smoke test on HEAVY-tier branches.
-  # timeout-minutes: 60 to account for DappStack boot + seed_demo_depositors
-  # (typically 25-35 min on GitHub-hosted runners).
-  demo-tvl:
-    name: demo-tvl-full-stack
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Verify Docker is available
-        run: docker version && docker compose version
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: stable
-      - name: Install bun (needed by DappStack dapp-build step)
-        uses: oven-sh/setup-bun@v2
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "testing/smoke-test -> target"
-      - name: cargo build (smoke-test crate)
-        working-directory: testing/smoke-test
-        run: cargo build -p smoke-test
-      - name: cargo test full_stack_demo_tvl
-        working-directory: testing/smoke-test
-        run: cargo test -p smoke-test --release --test full_stack_demo_tvl -- --test-threads=1 --nocapture
-      - name: Safety-net teardown (always)
-        if: always()
-        working-directory: testing/ethereum-testnet/config
-        run: docker compose down -v --remove-orphans || true
