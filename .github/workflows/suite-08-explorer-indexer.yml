@@ -88,6 +88,43 @@ jobs:
         working-directory: services/explorer-indexer
         run: cargo test --lib -- abi::tests::abi_drift_gate --nocapture
 
+      # LIB UNIT TESTS (issue #1434)
+      #
+      # Before this step, CI executed exactly TWO of this crate's 21 `--lib`
+      # tests, each named individually: `abi::tests::abi_drift_gate` above, and
+      # `abi::tests::event_topics_match_foundry_artifacts` in
+      # suite-16-abi-drift.yml. The other 19 were compiled by `cargo test
+      # --no-run` and run by nothing — `feature_flags::tests` (9),
+      # `db::count_guard_tests` (2), two further `abi::tests`, and the
+      # `indexer::risk_label_tests` added by issue #1434.
+      #
+      # check_cargo_test_target_coverage.py (suite-04) closes this hole for
+      # integration targets — a `tests/<name>.rs` no workflow invokes — but its
+      # subject is (package, target) pairs, so a `--lib` target that IS invoked
+      # under a name filter counts as covered while every unnamed test in it
+      # stays dark. This step is the lib-side counterpart: it runs the whole lib
+      # target so adding a `#[cfg(test)] mod` to src/ no longer adds zero CI
+      # coverage.
+      #
+      # --skip event_topics_match_foundry_artifacts because that test reads the
+      # compiled Foundry artifacts in out/, which this job deliberately does not
+      # build; suite-16 owns it and runs it there after `forge build`. Skipping
+      # it here is not a silent skip: it asserts loudly when out/ is absent
+      # (issue #1346), which is exactly why it cannot run in this job.
+      #
+      # Routed through cargo_test_require_executed.sh so a filter that stops
+      # matching — a renamed module, a moved test — fails RED instead of passing
+      # as a zero-collected run.
+      #
+      # Invariant (B) of check_rust_test_target_compile_coverage.py holds: this
+      # job compiles this crate's tests/ binaries in `Build test binaries` above,
+      # in the same job, so the crate-local verdict is honest.
+      - name: Lib unit tests
+        run: |
+          bash .github/scripts/cargo_test_require_executed.sh \
+            -p explorer-indexer --lib \
+            -- --skip event_topics_match_foundry_artifacts --nocapture
+
       # MIGRATIONS + BOOT SCHEMA GUARD (issues #1359, #1392)
       # tests/migrations.rs covers the schema itself, the `--migrate-only` CLI,
       # and (issue #1392) the boot-time refusal to run against a schema whose
