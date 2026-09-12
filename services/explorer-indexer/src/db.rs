@@ -89,6 +89,21 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 ///
 /// Each variant names one shape so the operator is told which mistake this is;
 /// "your schema is wrong" does not distinguish a rollback from an edit.
+///
+/// # Match on the variant; do not print `Display` from another context
+///
+/// The messages are written for the **indexer boot path** and name its remedies
+/// — `MissingVersion` says to run `indexer --migrate-only` against this
+/// `DATABASE_URL`, `UnknownAppliedVersion` says to deploy a matching binary.
+/// Those instructions are wrong anywhere else. A second caller comparing a
+/// different pair of realities — the on-disk `migrations/` directory against the
+/// embedded set, say — gets the right *classification* from [`compare_schema`]
+/// but must render its own text from the variant, because its remedy is
+/// "regenerate the embedded set", not "migrate the database".
+///
+/// That is why this is a public enum with public fields rather than an opaque
+/// error: matching on it is the intended use, and `{e}` from a non-boot caller
+/// is the misuse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SchemaDivergence {
     /// `_sqlx_migrations` is absent or empty — nothing has ever been migrated.
