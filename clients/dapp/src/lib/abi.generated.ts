@@ -10360,12 +10360,23 @@ export const agentTokenVaultAbiGenerated = [
  * Full ProtocolAssetVault ABI — generated from Foundry artifact.
  *
  * The second canonical counterpart for `abi.ts`'s hand-maintained
- * `BASKET_VAULT_SHORTLIST_ABI`. The dapp classifies this vault as a basket
- * (risk label VOLATILE) and calls `shortlist()` on it, but before issue #1364
- * only `AgentTokenVault` declared that function, so every call reverted and the
- * composition panel rendered "unavailable". `abi-parity.test.ts` now checks the
- * hand-maintained fragment against BOTH basket vaults, so the next basket vault
- * that ships without `shortlist()` fails CI instead of degrading quietly.
+ * `BASKET_VAULT_SHORTLIST_ABI`. The dapp's `CompositionSection` treats a vault
+ * as a basket when `riskLabel === "VOLATILE" || (SPECULATIVE && Active)`
+ * (`VaultDetail.tsx`) and then calls `shortlist()` on it — and before issue
+ * #1364 only `AgentTokenVault` declared that function, so such a call reverted
+ * and the panel rendered "unavailable".
+ *
+ * Note the panel is NOT yet reachable for this vault on `dev`: issue #1434 —
+ * the indexer's risk-label mapping matches names no deploy script registers —
+ * makes every vault resolve to `STABLE_YIELD`, so `isBasket` is never true.
+ * #1364 and #1434 are independent defects behind one symptom; both must land
+ * before the composition panel resolves end to end. Declaring `shortlist()`
+ * here is correct and inert until then, and the parity gate below earns its
+ * keep regardless.
+ *
+ * `abi-parity.test.ts` now checks the hand-maintained fragment against BOTH
+ * basket vaults, so the next basket vault that ships without `shortlist()`
+ * fails CI instead of degrading quietly.
  */
 export const protocolAssetVaultAbiGenerated = [
   {
