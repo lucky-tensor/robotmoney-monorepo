@@ -549,3 +549,74 @@ Verified red-before by hand on PR #1408 — moving `indexed` from `agent` to
 `contracts/gateway/interfaces/IGateway.sol` and rebuilding turned this test
 red while `abi_drift_gate` and `topic_hashes_match_sol_macros`, the two
 topic-0-only tests, both stayed green.
+
+---
+
+## A warm build cache ships an embedded artefact the source tree no longer holds
+
+### Name
+`stale-cache-embedded-artefact`
+
+### Mechanism
+A macro embeds a directory of non-`.rs` data into a binary at compile time,
+but does not tell cargo that it read those files. Cargo's freshness check
+therefore sees no dependency between the crate and the data: change only the
+data and the crate is "fresh", so nothing recompiles and the artefact keeps
+the **previous** copy of the data.
+
+Alone that is a developer annoyance. It becomes a false green when CI restores
+`target/` across runs (`Swatinem/rust-cache`), because the job then compiles
+nothing, runs the full test suite against a binary built from an older tree,
+and reports success. Every signal a reviewer would look at is honest-looking:
+the tests ran, they executed a non-zero count of assertions, they passed. What
+they exercised is not the change under review. The executed-count guard cannot
+see it — the tests really did run — and neither can a target-coverage guard,
+because the target really is wired up.
+
+The shape generalises past migrations to any `include`-a-directory macro:
+embedded assets, templates, fixtures, ABI JSON. The distinguishing question is
+not "is the data read at compile time" but "does anything emit
+`cargo:rerun-if-changed` for it". `include_str!` and `include_bytes!` are safe
+— rustc records them in its dep-info and cargo honours that — but a proc macro
+that reads the filesystem itself is not, unless it calls
+`proc_macro::tracked_path::path()`, which is nightly-only.
+
+### Instance
+`services/explorer-indexer/src/db.rs` embeds the migration set with
+`sqlx::migrate!("./migrations")`. sqlx calls `proc_macro::tracked_path::path()`
+only under `#[cfg(any(sqlx_macros_unstable, procmacro2_semver_exempt))]`
+(`sqlx-macros-core/src/migrate.rs`) and this workspace builds on stable, and
+the crate had no `build.rs`, so nothing supplied the dependency (issue #1416,
+found while implementing issue #1392 / PR #1405). Measured on the pre-fix tree
+with a warm `target/`: adding `migrations/0016_*.sql` and re-running
+`cargo test -p explorer-indexer` printed `Finished` in 0.16s with no
+`Compiling explorer-indexer` line, and the embedded `MIGRATOR` still held 15
+migrations against 16 on disk. A PR that only added a migration could
+therefore have gone green in `explorer-indexer-fast` with that migration never
+compiled in, and `indexer --migrate-only` built from that cache would not have
+applied it.
+
+### Detecting check
+`services/explorer-indexer/build.rs` emits
+`cargo:rerun-if-changed=migrations`; cargo walks a directory dependency
+recursively, so additions, edits and deletions all mark the crate dirty.
+`services/explorer-indexer/tests/migration_set_parity.rs` is the guard on that
+mechanism: it compares the compile-time embedded set against the run-time
+contents of `migrations/`, so a regression in the rebuild trigger fails RED
+rather than shipping a stale binary — but only for an **added, deleted or
+renamed** migration. It compares `version -> description`, not file contents,
+so an **in-place edit** of an existing migration (same filename, different SQL)
+is invisible to it, which is the shape a PR takes when an author fixes a
+migration they added earlier in the same PR. That gap is narrow today because
+the rebuild trigger does cover in-place edits and sqlx independently rejects a
+mutated already-applied migration via `_sqlx_migrations` checksum validation at
+boot; it would matter if the trigger itself regressed. Comparing the embedded
+`Migration::sql`/`checksum` against the file bytes would close it — issue
+#1429 tracks the same version-vs-checksum blind spot in the boot guard, and
+both want the same comparison. It needs no Postgres, Docker or network,
+and runs in `.github/workflows/suite-04-rust-quality.yml`'s `lint` job — a
+LIGHT suite with no draft gate — because a stale `target/` bites hardest
+during draft iteration. Nothing detects a _new_ instance of this shape in
+another crate: `services/explorer-indexer` is currently the only workspace
+member with a `migrations/` directory, and a future
+compile-time-directory-reading macro elsewhere would need its own guard.
