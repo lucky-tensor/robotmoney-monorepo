@@ -306,3 +306,148 @@ async fn get_vault_partial_when_total_assets_reverts() {
     // share_price uncomputable when total_assets read failed
     assert!(v["data"]["share_price"].is_null());
 }
+
+/// Sibling of [`get_vault_partial_when_total_assets_reverts`] for the *other*
+/// accounting sub-read (issue #1427).
+///
+/// `read_vault` records `total_assets` and `total_supply` failures in two
+/// independent `record_err` arms. PR #1404 repurposed the original
+/// `total_supply` test into the `total_assets` one above, leaving the
+/// `record_err("total_supply")` arm untested — a regression there would have
+/// shipped green. This restores the branch's own coverage: totalSupply reverts
+/// while every sibling read succeeds.
+#[tokio::test]
+async fn get_vault_partial_when_total_supply_reverts() {
+    let mut server = mockito::Server::new_async().await;
+    let chain_id = 31337u64;
+    let block_no = 1u64;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(json!({"method": "eth_chainId"})))
+        .with_status(200)
+        .with_body(jrpc_result(&format!("0x{chain_id:x}")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(json!({"method": "eth_blockNumber"})))
+        .with_status(200)
+        .with_body(jrpc_result(&format!("0x{block_no:x}")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // gateway.vault, asset, name, symbol, decimals — all OK.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            RobotMoneyGateway::vaultCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_address(VAULT)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::assetCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_address(USDC)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::nameCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_string_returns::<MockVault::nameCall>("V")))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::symbolCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_string_returns::<MockVault::symbolCall>(
+            "V",
+        )))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::decimalsCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_u8(6)))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // totalAssets remains readable.
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::totalAssetsCall,
+        >()))
+        .with_status(200)
+        .with_body(jrpc_result(&enc_u256(U256::from(2_000_000u64))))
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    server
+        .mock("POST", "/")
+        .match_body(match_eth_call_selector(&selector_hex_of::<
+            MockVault::totalSupplyCall,
+        >()))
+        .with_status(200)
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}"#)
+        .expect_at_least(0)
+        .create_async()
+        .await;
+
+    let fix = Fixture::build(&server.url(), chain_id);
+    let out = rmpc()
+        .args(["get-vault", "--config", fix.config_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["partial"], true);
+    let errs = v["errors"].as_array().unwrap();
+    assert!(
+        errs.iter().any(|e| e["field"] == "total_supply"),
+        "expected a total_supply entry in errors[], got {errs:?}"
+    );
+    // Only the reverting sub-read is reported — the sibling accounting read
+    // succeeded and must not be tarred with it.
+    assert!(
+        !errs.iter().any(|e| e["field"] == "total_assets"),
+        "total_assets read succeeded and must not appear in errors[], got {errs:?}"
+    );
+
+    // Sibling reads that succeeded still carry their values.
+    let d = &v["data"];
+    assert_eq!(d["total_assets"], "2000000");
+    assert_eq!(
+        d["gateway_vault"].as_str().unwrap().to_lowercase(),
+        format!("{VAULT:#x}")
+    );
+    assert_eq!(
+        d["asset"].as_str().unwrap().to_lowercase(),
+        format!("{USDC:#x}")
+    );
+    assert_eq!(d["name"], "V");
+    assert_eq!(d["symbol"], "V");
+    assert_eq!(d["decimals"], 6);
+
+    // share_price uncomputable when the total_supply read failed.
+    assert!(d["share_price"].is_null());
+}
