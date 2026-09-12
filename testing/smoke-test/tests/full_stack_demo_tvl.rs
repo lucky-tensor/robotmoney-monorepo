@@ -314,9 +314,18 @@ fn explorer_api_reports_four_vault_tvl_and_router_weights_after_boot() {
 // devnet assertions exist to catch (three vaults, a paused vault, a zero-TVL
 // vault, weights that do not sum to a full allocation). Loosening either
 // invariant turns them red — in milliseconds, with no Docker, in the same
-// `smoke-test-devnet-full_stack_demo_tvl` job. They also raise that job's
-// executed-test count from 1 to 7, so `cargo_test_require_executed.sh` has more
-// than a single result line to stand on.
+// `smoke-test-devnet-full_stack_demo_tvl` job.
+//
+// KNOWN GAP — these tests WEAKEN `cargo_test_require_executed.sh` for this
+// binary, they do not strengthen it (issue #1437). That guard fails only when
+// `PASSED_TOTAL <= 0`; its `RESULT_LINES` count is echoed, never gated on, and
+// is one per test *binary* regardless of how many tests ran (the job log reads
+// `1 test binary result line(s), 7 test(s) passed`). Before these tests landed
+// this binary held only the devnet test, so dropping it made the job report
+// `0 passed` and the guard went red. Now six hermetic tests pad the count, so
+// dropping the devnet test would still report `6 passed` and stay green with
+// zero full-stack coverage. Do not read a green executed-test-guard on this
+// job as evidence that the devnet assertion ran.
 //
 // Verified mutation-sensitive before landing (issue #1371): loosening
 // `four_vault_tvl_invariant_holds` to `!resp.vaults.is_empty() && active_nonzero
