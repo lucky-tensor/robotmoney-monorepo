@@ -39,14 +39,15 @@
 # not to pre-empt.
 #   clients/rust-payment-client/abi/MockVault.json — adds paused(), absent from the artifact; rmpc reads real deployed vaults through this "TEST FIXTURE only" contract's ABI (contracts/gateway/MockVault.sol:14). Whether the clients should instead bind to a compiler-owned contracts/interfaces/IVault.sol is #1286's Q3, which owns the decision and the follow-on work; answering it resolves this file (tracking issue #1286)
 #
-# WHY `ProtocolAssetVault` IS NOT GENERATED HERE (issue #1346 AC4)
-# The dapp's `BASKET_VAULT_SHORTLIST_ABI` names both basket vaults, so both were
-# candidates for generation. Only `AgentTokenVault` is emitted: it is the only
-# one that declares `shortlist()` (AgentTokenVault.sol:127 overrides it;
-# ProtocolAssetVault adds only maxAssets()). Emitting ProtocolAssetVault would
-# add a 175-entry ABI that no hand-maintained dapp binding can be compared
-# against. That asymmetry is itself a defect — tracked in issue #1364 — and
-# ProtocolAssetVault joins this script when it is fixed.
+# BOTH BASKET VAULTS ARE NOW GENERATED (issue #1364)
+# The dapp's `BASKET_VAULT_SHORTLIST_ABI` names both basket vaults, but #1346
+# emitted only `AgentTokenVault` because it was the only one that declared
+# `shortlist()` — `ProtocolAssetVault` had none to generate, which is why its
+# composition panel rendered "unavailable". #1364 gave `ProtocolAssetVault` the
+# same `shortlist()`, so it is emitted here too and `abi-parity.test.ts` now
+# compares `BASKET_VAULT_SHORTLIST_ABI` against BOTH canonical artifacts.
+# Both live inside the already-drift-gated `abi.generated.ts`; no new file joins
+# the inventory.
 
 set -euo pipefail
 
@@ -131,6 +132,7 @@ robot_vault_abi  = load_abi(f"{out_dir}/RobotMoneyVault.sol/RobotMoneyVault.json
 registry_abi     = load_abi(f"{out_dir}/VaultRegistry.sol/VaultRegistry.json")
 router_abi       = load_abi(f"{out_dir}/PortfolioRouter.sol/PortfolioRouter.json")
 agent_vault_abi  = load_abi(f"{out_dir}/AgentTokenVault.sol/AgentTokenVault.json")
+proto_vault_abi  = load_abi(f"{out_dir}/ProtocolAssetVault.sol/ProtocolAssetVault.json")
 
 content = f"""\
 // THIS FILE IS AUTO-GENERATED — DO NOT EDIT BY HAND.
@@ -187,10 +189,35 @@ export const routerAbiGenerated = {abi_to_ts(router_abi)} as const;
  * five parallel arrays, not a struct array; getting that wrong was scan
  * finding DAPP-5.
  *
- * `ProtocolAssetVault` is deliberately absent: it does not declare
- * `shortlist()` at all (issue #1364). See this script's header.
+ * Its counterpart `protocolAssetVaultAbiGenerated` is below: until issue #1364
+ * `ProtocolAssetVault` declared no `shortlist()` at all, so there was nothing to
+ * generate and nothing to compare.
  */
 export const agentTokenVaultAbiGenerated = {abi_to_ts(agent_vault_abi)} as const;
+
+/**
+ * Full ProtocolAssetVault ABI — generated from Foundry artifact.
+ *
+ * The second canonical counterpart for `abi.ts`'s hand-maintained
+ * `BASKET_VAULT_SHORTLIST_ABI`. The dapp's `CompositionSection` treats a vault
+ * as a basket when `riskLabel === "VOLATILE" || (SPECULATIVE && Active)`
+ * (`VaultDetail.tsx`) and then calls `shortlist()` on it — and before issue
+ * #1364 only `AgentTokenVault` declared that function, so such a call reverted
+ * and the panel rendered "unavailable".
+ *
+ * Note the panel is NOT yet reachable for this vault on `dev`: issue #1434 —
+ * the indexer's risk-label mapping matches names no deploy script registers —
+ * makes every vault resolve to `STABLE_YIELD`, so `isBasket` is never true.
+ * #1364 and #1434 are independent defects behind one symptom; both must land
+ * before the composition panel resolves end to end. Declaring `shortlist()`
+ * here is correct and inert until then, and the parity gate below earns its
+ * keep regardless.
+ *
+ * `abi-parity.test.ts` now checks the hand-maintained fragment against BOTH
+ * basket vaults, so the next basket vault that ships without `shortlist()`
+ * fails CI instead of degrading quietly.
+ */
+export const protocolAssetVaultAbiGenerated = {abi_to_ts(proto_vault_abi)} as const;
 """
 
 with open(dest, "w") as f:

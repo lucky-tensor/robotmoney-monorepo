@@ -1,0 +1,163 @@
+---
+title: "ShortlistMockPool"
+---
+
+# ShortlistMockPool
+
+[Git Source](https://github.com/robotmoney/robotmoney-core/blob/0721b5607579ae8fe57f7d16428d23a62c533404/contracts/test/ProtocolAssetVaultShortlist.t.sol)
+
+<i>
+
+Uniswap V3 pool mock: token0/token1 reads for addAsset validation plus a
+flat 1:1 TWAP via observe() (arithmetic-mean tick = 0). Mirrors the mock
+in AgentTokenVault.t.sol; kept local so the two suites stay independent.
+
+</i>
+
+## Constants
+
+### token0
+
+```solidity
+address public immutable token0;
+```
+
+### token1
+
+```solidity
+address public immutable token1;
+```
+
+## State Variables
+
+### cardinality
+
+```solidity
+uint16 public cardinality = 100;
+```
+
+### poolLiquidity
+
+```solidity
+uint128 public poolLiquidity = 1e18;
+```
+
+### feeTier
+
+```solidity
+uint24 public feeTier;
+```
+
+## Functions
+
+<a id="constructor-address-address-uint24"></a>
+
+### constructor
+
+```solidity
+constructor(address token0_, address token1_, uint24 fee_);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| token0_ | `address` |  |
+| token1_ | `address` |  |
+| fee_ | `uint24` |  |
+
+<a id="fee"></a>
+
+### fee
+
+```solidity
+function fee() external view returns (uint24);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint24` |  |
+
+<a id="liquidity"></a>
+
+### liquidity
+
+```solidity
+function liquidity() external view returns (uint128);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint128` |  |
+
+<a id="slot0"></a>
+
+### slot0
+
+```solidity
+function slot0() external view returns (uint160, int24, uint16, uint16, uint16, uint8, bool);
+```
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint160` |  |
+| &lt;none&gt; | `int24` |  |
+| &lt;none&gt; | `uint16` |  |
+| &lt;none&gt; | `uint16` |  |
+| &lt;none&gt; | `uint16` |  |
+| &lt;none&gt; | `uint8` |  |
+| &lt;none&gt; | `bool` |  |
+
+<a id="observe-uint32"></a>
+
+### observe
+
+```solidity
+function observe(uint32[] calldata secondsAgos)
+        external
+        pure
+        returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiq);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| secondsAgos | `uint32[]` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| tickCumulatives | `int56[]` |  |
+| secondsPerLiq | `uint160[]` |  |
+
+<a id="observations-uint256"></a>
+
+### observations
+
+```solidity
+function observations(uint256) external view returns (uint32, int56, uint160, bool);
+```
+
+**Parameters**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| _ | `uint256` |  |
+
+**Returns**
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| &lt;none&gt; | `uint32` |  |
+| &lt;none&gt; | `int56` |  |
+| &lt;none&gt; | `uint160` |  |
+| &lt;none&gt; | `bool` |  |
+

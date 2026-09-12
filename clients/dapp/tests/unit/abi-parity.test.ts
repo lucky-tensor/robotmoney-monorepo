@@ -27,9 +27,22 @@
  * `.github/scripts/generate_abi_bindings.sh` generated bindings for neither
  * basket vault. Issue #1346 extended the generator to emit
  * `agentTokenVaultAbiGenerated`, so `shortlist()` is now compared against real
- * Foundry output like every other binding. `AgentTokenVault` is the counterpart
- * because it is the only contract that declares `shortlist()`;
- * `ProtocolAssetVault` does not, which is its own defect (issue #1364).
+ * Foundry output like every other binding.
+ *
+ * `BASKET_VAULT_SHORTLIST_ABI` is checked against BOTH basket vaults (issue
+ * #1364). It is not an `AgentTokenVault` binding — `abi.ts` documents it as
+ * "AgentTokenVault / ProtocolAssetVault `shortlist()`", and
+ * `VaultDetail.tsx` calls it on any vault whose registry risk label makes it a
+ * basket. Checking one vault let `ProtocolAssetVault` ship without
+ * `shortlist()` at all, which made its composition panel permanently
+ * "unavailable". Pairing the fragment against every basket vault means the next
+ * one that ships without the function reds this test instead of degrading
+ * quietly in the dapp.
+ *
+ * `RwaVault` is the third `BasketVault` subclass and is deliberately absent: it
+ * declares no `shortlist()` either, and the hoist onto `BasketVault` that would
+ * give every basket vault one is 682 bytes over EIP-170 on `RwaVault`. It joins
+ * `PAIRS` when #1435 fixes that.
  *
  * `registryAbi` (previously excluded here for its own real, pre-existing
  * `getVault` drift from `VaultRegistry.sol` — issue #1348) is fixed and
@@ -51,6 +64,7 @@ import {
   routerAbiGenerated,
   registryAbiGenerated,
   agentTokenVaultAbiGenerated,
+  protocolAssetVaultAbiGenerated,
 } from "../../src/lib/abi.generated";
 
 interface AbiParam {
@@ -103,9 +117,14 @@ const PAIRS: readonly AbiPair[] = [
   { label: "routerAbi", handMaintained: routerAbi, canonical: routerAbiGenerated },
   { label: "registryAbi", handMaintained: registryAbi, canonical: registryAbiGenerated },
   {
-    label: "BASKET_VAULT_SHORTLIST_ABI",
+    label: "BASKET_VAULT_SHORTLIST_ABI vs AgentTokenVault",
     handMaintained: BASKET_VAULT_SHORTLIST_ABI,
     canonical: agentTokenVaultAbiGenerated,
+  },
+  {
+    label: "BASKET_VAULT_SHORTLIST_ABI vs ProtocolAssetVault",
+    handMaintained: BASKET_VAULT_SHORTLIST_ABI,
+    canonical: protocolAssetVaultAbiGenerated,
   },
 ];
 

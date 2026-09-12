@@ -222,6 +222,7 @@ contracts/test/contract.PosConfAavePool.mdx
 contracts/test/contract.PosConfComet.mdx
 contracts/test/contract.PosConfMorphoVault.mdx
 contracts/test/contract.ProbeHoldAdapter.mdx
+contracts/test/contract.ProtocolAssetVaultShortlistTest.mdx
 contracts/test/contract.ReadCountingAdapter.mdx
 contracts/test/contract.RecordingSwapRouter.mdx
 contracts/test/contract.ReentrantVault.mdx
@@ -242,6 +243,8 @@ contracts/test/contract.ShareLeakRedeemVault.mdx
 contracts/test/contract.ShareLeakVault.mdx
 contracts/test/contract.ShortfallAdapter.mdx
 contracts/test/contract.ShortfallMorphoVault.mdx
+contracts/test/contract.ShortlistMockPool.mdx
+contracts/test/contract.ShortlistStubSwapRouter.mdx
 contracts/test/contract.StubSwapRouter.mdx
 contracts/test/contract.StubSwapRouter.mdx
 contracts/test/contract.TestERC20_18.mdx
