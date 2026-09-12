@@ -1545,16 +1545,294 @@ async fn call_bool(
     Ok(v != U256::ZERO)
 }
 
+/// The label used when a registration name carries no recognised
+/// discriminator. It is a real classification, not a sentinel, which is why
+/// [`risk_label_from_vault_name`] logs when it falls back to it — issue #1434
+/// was invisible for exactly as long as the fallback was silent.
+const DEFAULT_RISK_LABEL: &str = "STABLE_YIELD";
+
+/// Classify a vault registration name, or `None` if no discriminator matched.
+///
+/// Matching is on a normalised **substring**, not the whole name, because the
+/// name is not a stable key:
+///
+/// - two of the five registration sites take the name from an environment
+///   variable (`VAULT_NAME` in `DeployVaultRegistry.s.sol`, `RWA_VAULT_NAME` in
+///   `DeployDemoExtraVaults.s.sol`), so the exact string is a deploy-time
+///   input, not a constant;
+/// - the shipped names already disagree on the RWA vault's suffix —
+///   `DeployVaultThemes.s.sol` registers `"Robot Money RWA"` while
+///   `DeployDemoExtraVaults.s.sol` defaults to `"Robot Money RWA / Thematic"`.
+///
+/// An exact-match table over such a key is what produced #1434: it was keyed on
+/// an `"RM …"` spelling that no deploy script has ever registered, so all four
+/// arms were dead and every vault took the default.
+///
+/// Order is significant. `protocol` is tested after the basket discriminators
+/// and before `usdc` so that `ProtocolAssetVault` — whose asset *is* USDC —
+/// classifies on what the vault holds rather than on what it is denominated in.
+fn classify_risk_label(name: &str) -> Option<&'static str> {
+    // Lower-case and collapse runs of whitespace, so a double space or a
+    // trailing newline in an env-supplied name cannot defeat the match.
+    let normalised = name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    if normalised.contains("agent token")
+        || normalised.contains("rwa")
+        || normalised.contains("thematic")
+    {
+        Some("SPECULATIVE")
+    } else if normalised.contains("protocol") {
+        Some("VOLATILE")
+    } else if normalised.contains("usdc") {
+        Some("STABLE_YIELD")
+    } else {
+        None
+    }
+}
+
 /// Map vault name to risk label per PRD §11.
 /// The VaultRegistered event carries only name and asset; risk_label was
 /// removed from VaultMetadata to avoid contract changes. The indexer derives
 /// it from the registration name as a stopgap — a contract-level risk_label
 /// field is a future improvement.
+///
+/// See [`classify_risk_label`] for why the derivation is a normalised substring
+/// match rather than an exact-name table (issue #1434). An unrecognised name is
+/// still classified [`DEFAULT_RISK_LABEL`], but loudly: the dapp's
+/// `CompositionSection` picks its rendering off this column, so a
+/// misclassification shows up as a basket vault rendering the static
+/// `USDC -> rmUSDC` label, with nothing in the logs to point at the cause.
 fn risk_label_from_vault_name(name: &str) -> &'static str {
-    match name {
-        "RM USDC" => "STABLE_YIELD",
-        "RM Protocol" => "VOLATILE",
-        "RM Agent Tokens" | "RM RWA / Thematic" => "SPECULATIVE",
-        _ => "STABLE_YIELD",
+    classify_risk_label(name).unwrap_or_else(|| {
+        tracing::warn!(
+            vault_name = %name,
+            risk_label = DEFAULT_RISK_LABEL,
+            "vault registration name matches no risk-label discriminator; \
+             defaulting. The dapp renders composition off risk_label, so a \
+             basket vault landing here will render as a plain USDC vault."
+        );
+        DEFAULT_RISK_LABEL
+    })
+}
+
+#[cfg(test)]
+mod risk_label_tests {
+    use super::{classify_risk_label, risk_label_from_vault_name, DEFAULT_RISK_LABEL};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    /// Repository root, derived from this crate's manifest directory
+    /// (`services/explorer-indexer`).
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+    }
+
+    /// Every double-quoted literal on one line of Solidity.
+    ///
+    /// Deliberately naive — the lines this is applied to are filtered to the
+    /// three registration shapes below, none of which contain an escaped quote.
+    fn quoted_literals(line: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = line;
+        while let Some(open) = rest.find('"') {
+            rest = &rest[open + 1..];
+            match rest.find('"') {
+                Some(close) => {
+                    out.push(rest[..close].to_string());
+                    rest = &rest[close + 1..];
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// Scrape the vault names the deploy scripts actually register.
+    ///
+    /// Three shapes carry a name literal today:
+    ///
+    /// - `VaultMetadata({name: "…", …})`
+    /// - `string public constant …_NAME = "…"` (the env-override defaults)
+    /// - `_registerIfAbsent(registry, vault, asset, "…")`
+    ///
+    /// Comment lines are skipped so the doc comments that quote these names for
+    /// documentation do not count as registration sites.
+    ///
+    /// Returns `(names, files_contributing)`.
+    fn registered_vault_names() -> (BTreeSet<String>, BTreeSet<String>) {
+        let script_dir = repo_root().join("contracts").join("script");
+        let mut names = BTreeSet::new();
+        let mut files = BTreeSet::new();
+
+        let entries = std::fs::read_dir(&script_dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", script_dir.display()));
+
+        for entry in entries {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sol") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("script file name")
+                .to_string();
+
+            for line in body.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                let is_registration = trimmed.contains("name: \"")
+                    || trimmed.contains("_NAME = \"")
+                    || trimmed.contains("_registerIfAbsent(");
+                if !is_registration {
+                    continue;
+                }
+                for literal in quoted_literals(trimmed) {
+                    if literal.trim().is_empty() {
+                        continue;
+                    }
+                    names.insert(literal);
+                    files.insert(file_name.clone());
+                }
+            }
+        }
+
+        (names, files)
+    }
+
+    /// Every name a deploy script registers must be recognised by the mapping.
+    ///
+    /// This is the regression pin for issue #1434: the previous table was keyed
+    /// on an `"RM …"` spelling that no script has ever registered, so all four
+    /// arms were dead and every vault fell through to the default. Renaming a
+    /// vault at its registration site now fails this test instead of silently
+    /// re-defaulting the whole registry to `STABLE_YIELD`.
+    #[test]
+    fn every_registered_vault_name_is_classified() {
+        let (names, files) = registered_vault_names();
+
+        // Guard the scrape itself. If registration moves to a shape this does
+        // not recognise, the loop below would pass vacuously; five names across
+        // four scripts is the state at the time of writing.
+        assert!(
+            names.len() >= 5,
+            "scraped only {} vault name(s) from contracts/script — the scrape has \
+             gone blind, or registration moved to a new shape. Found: {names:?}",
+            names.len()
+        );
+        assert!(
+            files.len() >= 4,
+            "scraped registration names from only {} script file(s): {files:?}",
+            files.len()
+        );
+
+        let unclassified: Vec<&String> = names
+            .iter()
+            .filter(|n| classify_risk_label(n).is_none())
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "these names are registered by a deploy script but match no \
+             risk-label discriminator, so every vault carrying one silently \
+             becomes {DEFAULT_RISK_LABEL}: {unclassified:?}"
+        );
+    }
+
+    /// Each shipped name maps to the label the PRD intends for that vault.
+    #[test]
+    fn risk_label_mapping_matches_shipped_vault_names() {
+        // The names registered on-chain today, per contracts/script.
+        let cases = [
+            ("Robot Money USDC", "STABLE_YIELD"),
+            ("Robot Money Protocol", "VOLATILE"),
+            ("Robot Money Agent Tokens", "SPECULATIVE"),
+            ("Robot Money RWA / Thematic", "SPECULATIVE"),
+            // DeployVaultThemes.s.sol registers the RWA vault without the
+            // "/ Thematic" suffix; both spellings must land on one label.
+            ("Robot Money RWA", "SPECULATIVE"),
+        ];
+
+        for (name, expected) in cases {
+            assert_eq!(
+                risk_label_from_vault_name(name),
+                expected,
+                "{name} must classify {expected}"
+            );
+            assert_eq!(
+                classify_risk_label(name),
+                Some(expected),
+                "{name} must be recognised explicitly, not reached via the default"
+            );
+        }
+    }
+
+    /// The pre-#1434 `"RM …"` spellings keep working: a database registered by
+    /// an older deploy script must not be reclassified by this change.
+    #[test]
+    fn legacy_rm_prefixed_names_still_classify() {
+        for (name, expected) in [
+            ("RM USDC", "STABLE_YIELD"),
+            ("RM Protocol", "VOLATILE"),
+            ("RM Agent Tokens", "SPECULATIVE"),
+            ("RM RWA / Thematic", "SPECULATIVE"),
+        ] {
+            assert_eq!(classify_risk_label(name), Some(expected), "legacy {name}");
+        }
+    }
+
+    /// A basket discriminator wins over the `usdc` denomination.
+    ///
+    /// `ProtocolAssetVault`'s asset *is* USDC, so a name mentioning both must
+    /// classify on what the vault holds, not on what it is denominated in.
+    #[test]
+    fn basket_discriminator_outranks_usdc_denomination() {
+        assert_eq!(
+            classify_risk_label("Robot Money Protocol (USDC)"),
+            Some("VOLATILE")
+        );
+        assert_eq!(
+            classify_risk_label("Robot Money Agent Tokens USDC"),
+            Some("SPECULATIVE")
+        );
+    }
+
+    /// Normalisation covers the deploy-time inputs: `VAULT_NAME` and
+    /// `RWA_VAULT_NAME` are environment variables, so casing and stray
+    /// whitespace are operator-supplied and must not defeat the match.
+    #[test]
+    fn classification_survives_casing_and_whitespace() {
+        for name in [
+            "robot money agent tokens",
+            "ROBOT MONEY AGENT TOKENS",
+            "Robot  Money   Agent  Tokens",
+            "  Robot Money Agent Tokens\n",
+        ] {
+            assert_eq!(
+                classify_risk_label(name),
+                Some("SPECULATIVE"),
+                "{name:?} must normalise to the Agent Tokens classification"
+            );
+        }
+    }
+
+    /// An unrecognised name is still classified, but reports that it was not
+    /// recognised — the distinction #1434 needed and did not have.
+    #[test]
+    fn unrecognised_name_falls_back_visibly() {
+        assert_eq!(classify_risk_label("Some Unrelated Vault"), None);
+        assert_eq!(
+            risk_label_from_vault_name("Some Unrelated Vault"),
+            DEFAULT_RISK_LABEL
+        );
     }
 }

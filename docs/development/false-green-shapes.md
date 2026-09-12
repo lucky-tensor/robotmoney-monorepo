@@ -549,3 +549,88 @@ Verified red-before by hand on PR #1408 — moving `indexed` from `agent` to
 `contracts/gateway/interfaces/IGateway.sol` and rebuilding turned this test
 red while `abi_drift_gate` and `topic_hashes_match_sol_macros`, the two
 topic-0-only tests, both stayed green.
+
+## A lookup table keyed on values the producer never emits, behind a plausible default
+
+### Name
+`dead-arms-behind-a-default`
+
+### Mechanism
+A classifier maps an input to one of several outputs with an exhaustive
+`match` plus a catch-all default. If every keyed arm is dead — the producer
+emits no value any arm matches — the default absorbs 100% of traffic. Nothing
+errors, nothing is skipped, and the output is a *valid* value of the output
+type, so no downstream type check, null check, or schema constraint fires. The
+classifier appears to work because it always answers.
+
+What makes it a false green rather than an ordinary bug is the test shape it
+invites. The default is the cheapest branch to cover: any input reaches it, so
+the first test written asserts the default and passes. A test suite can
+therefore have coverage of the function, exercise it on every tick, and still
+never once distinguish "classified" from "fell through". The keyed arms are
+dead code that no test can observe as dead, because the observable behaviour of
+a dead arm and of the default is the same shape of answer.
+
+Two properties turn a survivable version of this into a silent one:
+
+- **the default is a legitimate output, not a sentinel.** `Option::None`,
+  `"UNKNOWN"`, or an error would all propagate. A real category does not.
+- **the key is unstable.** Matching exactly on a human-readable name, an
+  environment-supplied string, or anything a second codebase spells
+  independently means the table and the producer drift without either side
+  changing.
+
+### Instance
+`services/explorer-indexer/src/indexer.rs`'s `risk_label_from_vault_name`
+derived each vault's `risk_label` from the name carried by `VaultRegistered`,
+matching exactly on `"RM USDC"`, `"RM Protocol"`, `"RM Agent Tokens"` and
+`"RM RWA / Thematic"`, defaulting to `"STABLE_YIELD"`. No deploy script has
+ever registered an `"RM …"` name: all five registration sites across
+`contracts/script/` spell the brand `"Robot Money …"`, and two of them
+(`VAULT_NAME`, `RWA_VAULT_NAME`) take the name from an environment variable, so
+the exact string was never a constant to match on in the first place. All four
+arms were dead and every vault in every deployment was labelled
+`STABLE_YIELD` (issue #1434).
+
+The consequence was product-visible and still not caught: the dapp's
+`CompositionSection` (`clients/dapp/src/components/VaultDetail.tsx`) selects
+its rendering off `risk_label`, so both basket vaults rendered the static
+`Deposit: USDC → Receipt: rmUSDC` label and `BasketShortlistPanel`'s live
+`shortlist()` call was unreachable in production. The single existing
+assertion on the column,
+`services/explorer-indexer/tests/vault_registry.rs`'s
+`vault_registered_event_inserts_vaults_row`, asserted `"STABLE_YIELD"` — the
+default — on a synthetic name (`"RobotMoney USDC Vault"`) that no deploy script
+registers either, so it passed both before and after the arms went dead.
+
+### Detecting check
+Two tests, because the shape needs both a positive and a provenance check.
+
+`every_registered_vault_name_is_classified` (lib, `indexer.rs`) scrapes the
+name literals out of `contracts/script/*.s.sol` — the `VaultMetadata({name:
+"…"})`, `…_NAME = "…"` and `_registerIfAbsent(…, "…")` shapes — and asserts the
+classifier recognises every one *explicitly*, via an
+`Option`-returning `classify_risk_label` rather than the defaulting wrapper. It
+is the producer, not a hand-copied list, that supplies the expectations, so
+renaming a vault at its registration site fails the test instead of silently
+re-defaulting the registry. The scrape guards itself against going blind with a
+floor on the number of names and contributing files found, since a
+registration shape it stopped recognising would otherwise make the loop pass
+vacuously. It found a fifth registration script the issue had not identified,
+`DeployVaultThemes.s.sol`, which registers `"Robot Money RWA"` without the
+`/ Thematic` suffix — a name a hand-maintained table would have missed again.
+
+`shipped_vault_names_get_their_intended_risk_label`
+(`tests/vault_registry.rs`) closes the end-to-end half: it drives three real
+registration names through decode and `upsert_vault` and asserts the stored
+column, including the two **non-default** labels. Asserting a non-default
+output is the part that cannot be satisfied by a dead table.
+
+The defaulting wrapper now also `warn!`s when it falls through, naming the
+vault and what the mislabelling will look like in the dapp, so the next
+unmatched name is loud rather than inferred from a rendering bug.
+
+Verified red-before by substituting the pre-#1434 exact-match table back into
+`classify_risk_label`: four of the six mapping tests and the end-to-end test go
+red, and the scrape test's failure message enumerates all five registered names
+as unclassified.
